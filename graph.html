@@ -1,0 +1,206 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+        
+            <script src="lib/bindings/utils.js"></script>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/dist/vis-network.min.css" integrity="sha512-WgxfT5LWjfszlPHXRmBWHkV2eceiWTOBvrKCNbdgDYTHrT2AeLCGbF4sZlZw3UMN3WtL0tGUoIAKsu8mllg/XA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js" integrity="sha512-LnvoEWDFrqGHlHmDD2101OrLcbsfkrzoSpvtSQtxK3RMnRV0eOkhhBN2dXHKRrUU8p2DGRTk35n4O8nWSVe1mQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+            
+        
+<center>
+<h1></h1>
+</center>
+
+<!-- <link rel="stylesheet" href="../node_modules/vis/dist/vis.min.css" type="text/css" />
+<script type="text/javascript" src="../node_modules/vis/dist/vis.js"> </script>-->
+        <link
+          href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css"
+          rel="stylesheet"
+          integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6"
+          crossorigin="anonymous"
+        />
+        <script
+          src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js"
+          integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
+          crossorigin="anonymous"
+        ></script>
+
+
+        <center>
+          <h1></h1>
+        </center>
+        <style type="text/css">
+
+             #mynetwork {
+                 width: 100%;
+                 height: 95vh;
+                 background-color: #f5f5f5;
+                 border: 1px solid lightgray;
+                 position: relative;
+                 float: left;
+             }
+
+             
+
+             
+
+             
+        </style>
+    
+        <style>
+          .graph-wrapper { display: flex; min-height: 100vh; }
+          .graph-legend {
+            width: 280px; min-width: 280px; padding: 1rem 1.25rem; background: #2d3748; color: #e2e8f0;
+            font-family: system-ui, -apple-system, sans-serif; font-size: 14px; overflow-y: auto;
+          }
+          .graph-legend h2 { margin: 0 0 1rem; font-size: 1.25rem; color: #fff; }
+          .graph-legend h3 { margin: 1rem 0 0.5rem; font-size: 0.9rem; color: #a0aec0; }
+          .graph-legend ul { margin: 0; padding-left: 1.25rem; }
+          .graph-legend li { margin: 0.35rem 0; }
+          .graph-legend a { color: #90cdf4; text-decoration: none; }
+          .graph-legend a:hover { text-decoration: underline; }
+          .node-legend { list-style: none; padding-left: 0; }
+          .node-legend li { display: flex; align-items: center; gap: 0.5rem; }
+          .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.3); }
+          .swatch.blue { background: blue; }
+          .swatch.green { background: green; }
+          .swatch.red { background: red; }
+          .swatch.purple { background: purple; }
+          .swatch.orange { background: orange; }
+          .swatch.gray { background: gray; }
+          .swatch.square { border-radius: 2px; }
+          .swatch.triangle { border-radius: 0; clip-path: polygon(50% 0%, 100% 100%, 0% 100%); }
+          .swatch.diamond { border-radius: 0; clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); }
+          .swatch.star { border-radius: 0; clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%); }
+          .rel-legend { font-size: 0.85rem; color: #cbd5e0; }
+          .graph-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+          .graph-main .card { flex: 1; margin: 0; }
+          .graph-main #mynetwork { height: 100vh !important; }
+        </style>
+    
+    </head>
+
+
+    <body>
+        <div class="graph-wrapper">
+            
+    <aside class="graph-legend">
+      <h2>Healthcare Graph</h2>
+      <nav class="toc">
+        <h3>Table of contents</h3>
+        <ul>
+          <li><a href="#nodes">Node types</a></li>
+          <li><a href="#relationships">Relationships</a></li>
+          <li><a href="#howto">How to use</a></li>
+        </ul>
+      </nav>
+      <section id="nodes">
+        <h3>Node types</h3>
+        <ul class="node-legend">
+          <li><span class="swatch blue dot"></span> Patient</li>
+          <li><span class="swatch green square"></span> Doctor</li>
+          <li><span class="swatch red triangle"></span> Disease</li>
+          <li><span class="swatch purple diamond"></span> Hospital</li>
+          <li><span class="swatch orange star"></span> Appointment</li>
+          <li><span class="swatch gray dot"></span> Other</li>
+        </ul>
+      </section>
+      <section id="relationships">
+        <h3>Relationships</h3>
+        <ul class="rel-legend">
+          <li>HAS_DISEASE</li>
+          <li>TREATS</li>
+          <li>VISITS</li>
+          <li>HAS_APPOINTMENT</li>
+          <li>AT_HOSPITAL</li>
+        </ul>
+      </section>
+      <section id="howto">
+        <h3>How to use</h3>
+        <ul>
+          <li><strong>Drag</strong> nodes to rearrange</li>
+          <li><strong>Scroll</strong> to zoom in/out</li>
+          <li><strong>Drag</strong> background to pan</li>
+          <li><strong>Hover</strong> a node for details (age, specialty, date, etc.)</li>
+        </ul>
+      </section>
+    </aside>
+    
+            <div class="graph-main">
+        <div class="card" style="width: 100%">
+            
+            
+            <div id="mynetwork" class="card-body"></div>
+        </div>
+
+        
+        
+
+        <script type="text/javascript">
+
+              // initialize global variables.
+              var edges;
+              var nodes;
+              var allNodes;
+              var allEdges;
+              var nodeColors;
+              var originalNodes;
+              var network;
+              var container;
+              var options, data;
+              var filter = {
+                  item : '',
+                  property : '',
+                  value : []
+              };
+
+              
+
+              
+
+              // This method is responsible for drawing the graph, returns the drawn network
+              function drawGraph() {
+                  var container = document.getElementById('mynetwork');
+
+                  
+
+                  // parsing and collecting nodes and edges from the python
+                  nodes = new vis.DataSet([{"color": "blue", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:0", "label": "Alice Smith", "shape": "dot", "size": 28, "title": "\u003cb\u003ePatient\u003c/b\u003e\u003cbr\u003eid: P1\u003cbr\u003ename: Alice Smith\u003cbr\u003eage: 34\u003cbr\u003esex: F"}, {"color": "red", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:15", "label": "Hypertension", "shape": "triangle", "size": 28, "title": "\u003cb\u003eDisease\u003c/b\u003e\u003cbr\u003eid: D1\u003cbr\u003ename: Hypertension\u003cbr\u003eicd10: I10"}, {"color": "green", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:10", "label": "Dr. Evans", "shape": "square", "size": 28, "title": "\u003cb\u003eDoctor\u003c/b\u003e\u003cbr\u003eid: DOC1\u003cbr\u003ename: Dr. Evans\u003cbr\u003especialty: Cardiology"}, {"color": "orange", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:24", "label": "A1", "shape": "star", "size": 28, "title": "\u003cb\u003eAppointment\u003c/b\u003e\u003cbr\u003eid: A1\u003cbr\u003edate: 2024-01-15"}, {"color": "orange", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:26", "label": "A3", "shape": "star", "size": 28, "title": "\u003cb\u003eAppointment\u003c/b\u003e\u003cbr\u003eid: A3\u003cbr\u003edate: 2024-03-10"}, {"color": "blue", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:1", "label": "Bob Jones", "shape": "dot", "size": 28, "title": "\u003cb\u003ePatient\u003c/b\u003e\u003cbr\u003eid: P2\u003cbr\u003ename: Bob Jones\u003cbr\u003eage: 45\u003cbr\u003esex: M"}, {"color": "red", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:16", "label": "Type 2 Diabetes", "shape": "triangle", "size": 28, "title": "\u003cb\u003eDisease\u003c/b\u003e\u003cbr\u003eid: D2\u003cbr\u003ename: Type 2 Diabetes\u003cbr\u003eicd10: E11"}, {"color": "green", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:11", "label": "Dr. Brown", "shape": "square", "size": 28, "title": "\u003cb\u003eDoctor\u003c/b\u003e\u003cbr\u003eid: DOC2\u003cbr\u003ename: Dr. Brown\u003cbr\u003especialty: General"}, {"color": "orange", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:25", "label": "A2", "shape": "star", "size": 28, "title": "\u003cb\u003eAppointment\u003c/b\u003e\u003cbr\u003eid: A2\u003cbr\u003edate: 2024-02-20"}, {"color": "blue", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:2", "label": "Carol White", "shape": "dot", "size": 28, "title": "\u003cb\u003ePatient\u003c/b\u003e\u003cbr\u003eid: P3\u003cbr\u003ename: Carol White\u003cbr\u003eage: 28\u003cbr\u003esex: F"}, {"color": "red", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:17", "label": "Asthma", "shape": "triangle", "size": 28, "title": "\u003cb\u003eDisease\u003c/b\u003e\u003cbr\u003eid: D3\u003cbr\u003ename: Asthma\u003cbr\u003eicd10: J45"}, {"color": "green", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:13", "label": "Dr. Nguyen", "shape": "square", "size": 28, "title": "\u003cb\u003eDoctor\u003c/b\u003e\u003cbr\u003eid: DOC4\u003cbr\u003ename: Dr. Nguyen\u003cbr\u003especialty: Pulmonology"}, {"color": "blue", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:3", "label": "David Lee", "shape": "dot", "size": 28, "title": "\u003cb\u003ePatient\u003c/b\u003e\u003cbr\u003eid: P4\u003cbr\u003ename: David Lee\u003cbr\u003eage: 52\u003cbr\u003esex: M"}, {"color": "green", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:12", "label": "Dr. Patel", "shape": "square", "size": 28, "title": "\u003cb\u003eDoctor\u003c/b\u003e\u003cbr\u003eid: DOC3\u003cbr\u003ename: Dr. Patel\u003cbr\u003especialty: Endocrinology"}, {"color": "orange", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:27", "label": "A4", "shape": "star", "size": 28, "title": "\u003cb\u003eAppointment\u003c/b\u003e\u003cbr\u003eid: A4\u003cbr\u003edate: 2024-04-05"}, {"color": "blue", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:4", "label": "Eva Martinez", "shape": "dot", "size": 28, "title": "\u003cb\u003ePatient\u003c/b\u003e\u003cbr\u003eid: P5\u003cbr\u003ename: Eva Martinez\u003cbr\u003eage: 41\u003cbr\u003esex: F"}, {"color": "orange", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:28", "label": "A5", "shape": "star", "size": 28, "title": "\u003cb\u003eAppointment\u003c/b\u003e\u003cbr\u003eid: A5\u003cbr\u003edate: 2024-05-12"}, {"color": "blue", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:5", "label": "Frank Chen", "shape": "dot", "size": 28, "title": "\u003cb\u003ePatient\u003c/b\u003e\u003cbr\u003eid: P6\u003cbr\u003ename: Frank Chen\u003cbr\u003eage: 39\u003cbr\u003esex: M"}, {"color": "orange", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:29", "label": "A6", "shape": "star", "size": 28, "title": "\u003cb\u003eAppointment\u003c/b\u003e\u003cbr\u003eid: A6\u003cbr\u003edate: 2024-06-01"}, {"color": "blue", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:6", "label": "Grace Kim", "shape": "dot", "size": 28, "title": "\u003cb\u003ePatient\u003c/b\u003e\u003cbr\u003eid: P7\u003cbr\u003ename: Grace Kim\u003cbr\u003eage: 33\u003cbr\u003esex: F"}, {"color": "red", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:19", "label": "Anxiety", "shape": "triangle", "size": 28, "title": "\u003cb\u003eDisease\u003c/b\u003e\u003cbr\u003eid: D5\u003cbr\u003ename: Anxiety\u003cbr\u003eicd10: F41"}, {"color": "orange", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:30", "label": "A7", "shape": "star", "size": 28, "title": "\u003cb\u003eAppointment\u003c/b\u003e\u003cbr\u003eid: A7\u003cbr\u003edate: 2024-07-18"}, {"color": "blue", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:7", "label": "Henry Wilson", "shape": "dot", "size": 28, "title": "\u003cb\u003ePatient\u003c/b\u003e\u003cbr\u003eid: P8\u003cbr\u003ename: Henry Wilson\u003cbr\u003eage: 61\u003cbr\u003esex: M"}, {"color": "red", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:18", "label": "Osteoarthritis", "shape": "triangle", "size": 28, "title": "\u003cb\u003eDisease\u003c/b\u003e\u003cbr\u003eid: D4\u003cbr\u003ename: Osteoarthritis\u003cbr\u003eicd10: M17"}, {"color": "green", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:14", "label": "Dr. Taylor", "shape": "square", "size": 28, "title": "\u003cb\u003eDoctor\u003c/b\u003e\u003cbr\u003eid: DOC5\u003cbr\u003ename: Dr. Taylor\u003cbr\u003especialty: Orthopedics"}, {"color": "orange", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:31", "label": "A8", "shape": "star", "size": 28, "title": "\u003cb\u003eAppointment\u003c/b\u003e\u003cbr\u003eid: A8\u003cbr\u003edate: 2024-08-22"}, {"color": "blue", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:8", "label": "Iris Davis", "shape": "dot", "size": 28, "title": "\u003cb\u003ePatient\u003c/b\u003e\u003cbr\u003eid: P9\u003cbr\u003ename: Iris Davis\u003cbr\u003eage: 29\u003cbr\u003esex: F"}, {"color": "orange", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:32", "label": "A9", "shape": "star", "size": 28, "title": "\u003cb\u003eAppointment\u003c/b\u003e\u003cbr\u003eid: A9\u003cbr\u003edate: 2024-09-14"}, {"color": "blue", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:9", "label": "Jack Brown", "shape": "dot", "size": 28, "title": "\u003cb\u003ePatient\u003c/b\u003e\u003cbr\u003eid: P10\u003cbr\u003ename: Jack Brown\u003cbr\u003eage: 47\u003cbr\u003esex: M"}, {"color": "orange", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:33", "label": "A10", "shape": "star", "size": 28, "title": "\u003cb\u003eAppointment\u003c/b\u003e\u003cbr\u003eid: A10\u003cbr\u003edate: 2024-10-30"}, {"color": "purple", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:20", "label": "City General", "shape": "diamond", "size": 28, "title": "\u003cb\u003eHospital\u003c/b\u003e\u003cbr\u003eid: H1\u003cbr\u003ename: City General"}, {"color": "purple", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:21", "label": "Central Clinic", "shape": "diamond", "size": 28, "title": "\u003cb\u003eHospital\u003c/b\u003e\u003cbr\u003eid: H2\u003cbr\u003ename: Central Clinic"}, {"color": "purple", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:22", "label": "North Medical Center", "shape": "diamond", "size": 28, "title": "\u003cb\u003eHospital\u003c/b\u003e\u003cbr\u003eid: H3\u003cbr\u003ename: North Medical Center"}, {"color": "purple", "font": {"color": "#222"}, "id": "4:e69e815b-d862-4a83-8049-4cace0047a3b:23", "label": "South Health Campus", "shape": "diamond", "size": 28, "title": "\u003cb\u003eHospital\u003c/b\u003e\u003cbr\u003eid: H4\u003cbr\u003ename: South Health Campus"}]);
+                  edges = new vis.DataSet([{"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:0", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:15"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:0", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:10"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:0", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:24"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:0", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:26"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:1", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:16"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:1", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:11"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:1", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:25"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:2", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:17"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:2", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:13"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:2", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:26"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:3", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:15"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:3", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:16"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:3", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:10"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:3", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:12"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:3", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:27"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:3", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:27"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:4", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:16"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:4", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:12"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:4", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:28"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:5", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:17"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:5", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:13"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:5", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:29"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:6", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:19"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:6", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:11"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:6", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:30"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:7", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:15"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:7", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:18"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:7", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:10"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:7", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:14"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:7", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:28"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:7", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:31"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:8", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:19"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:8", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:11"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:8", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:32"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:9", "label": "HAS_DISEASE", "title": "HAS_DISEASE", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:16"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:9", "label": "VISITS", "title": "VISITS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:12"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:9", "label": "HAS_APPOINTMENT", "title": "HAS_APPOINTMENT", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:33"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:10", "label": "TREATS", "title": "TREATS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:15"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:11", "label": "TREATS", "title": "TREATS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:15"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:11", "label": "TREATS", "title": "TREATS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:16"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:11", "label": "TREATS", "title": "TREATS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:19"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:12", "label": "TREATS", "title": "TREATS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:16"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:13", "label": "TREATS", "title": "TREATS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:17"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:14", "label": "TREATS", "title": "TREATS", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:18"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:24", "label": "AT_HOSPITAL", "title": "AT_HOSPITAL", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:20"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:25", "label": "AT_HOSPITAL", "title": "AT_HOSPITAL", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:21"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:26", "label": "AT_HOSPITAL", "title": "AT_HOSPITAL", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:20"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:27", "label": "AT_HOSPITAL", "title": "AT_HOSPITAL", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:22"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:28", "label": "AT_HOSPITAL", "title": "AT_HOSPITAL", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:21"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:29", "label": "AT_HOSPITAL", "title": "AT_HOSPITAL", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:23"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:30", "label": "AT_HOSPITAL", "title": "AT_HOSPITAL", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:20"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:31", "label": "AT_HOSPITAL", "title": "AT_HOSPITAL", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:22"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:32", "label": "AT_HOSPITAL", "title": "AT_HOSPITAL", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:21"}, {"arrows": "to", "from": "4:e69e815b-d862-4a83-8049-4cace0047a3b:33", "label": "AT_HOSPITAL", "title": "AT_HOSPITAL", "to": "4:e69e815b-d862-4a83-8049-4cace0047a3b:23"}]);
+
+                  nodeColors = {};
+                  allNodes = nodes.get({ returnType: "Object" });
+                  for (nodeId in allNodes) {
+                    nodeColors[nodeId] = allNodes[nodeId].color;
+                  }
+                  allEdges = edges.get({ returnType: "Object" });
+                  // adding nodes and edges to the graph
+                  data = {nodes: nodes, edges: edges};
+
+                  var options = {"nodes": {"font": {"size": 20, "face": "arial"}, "size": 28, "borderWidth": 2, "borderWidthSelected": 3, "shadow": true, "scaling": {"min": 20, "max": 40}}, "edges": {"font": {"size": 14, "align": "middle", "strokeWidth": 0}, "width": 1.5, "arrows": "to", "smooth": {"type": "cubicBezier"}}, "physics": {"enabled": true, "repulsion": {"nodeDistance": 220, "centralGravity": 0.03, "springLength": 180}, "solver": "repulsion"}, "interaction": {"dragNodes": true, "zoomView": true, "dragView": true, "hover": true}};
+
+                  
+
+
+                  
+
+                  network = new vis.Network(container, data, options);
+
+                  
+
+                  
+
+                  
+
+
+                  
+
+                  return network;
+
+              }
+              drawGraph();
+        </script>
+                </div>
+        </div>
+    </body>
+</html>

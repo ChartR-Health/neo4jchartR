@@ -439,6 +439,187 @@ def get_patients_with_clinical_state():
     return run_query(cypher)
 
 
+def get_next_patient_id():
+    """Get the next available patient ID (P<n+1>) based on existing patients."""
+    cypher = """
+    MATCH (p:Patient)
+    WITH p.id AS pid
+    WHERE pid STARTS WITH 'P'
+    RETURN pid
+    """
+    rows = run_query(cypher)
+    max_num = 0
+    for r in rows:
+        pid = r.get("pid", "")
+        if pid and pid.startswith("P"):
+            try:
+                num = int(pid[1:])
+                if num > max_num:
+                    max_num = num
+            except ValueError:
+                pass
+    return f"P{max_num + 1}"
+
+
+def create_patient_from_document(data: dict) -> dict:
+    """
+    Create a Patient node and related graph structure from document-extracted data.
+
+    Accepts:
+        patient_name, age, sex, symptoms (list[str]),
+        diseases (list[str]), clinical_values (dict)
+
+    Creates: Patient node, Symptom nodes + HAS_SYMPTOM, Disease links + HAS_DISEASE,
+    ClinicalState node + HAS_CLINICAL_STATE (when clinical values are present).
+
+    Returns dict with patient_id, patient_name and all created entities.
+    """
+    pid = get_next_patient_id()
+    name = data.get("patient_name") or f"Patient {pid}"
+    age = data.get("age")
+    sex = data.get("sex")
+
+    run_query(
+        "CREATE (p:Patient {id: $pid, name: $name, age: $age, sex: $sex, source: 'document_upload'})",
+        {"pid": pid, "name": name, "age": age, "sex": sex},
+    )
+
+    for symptom in data.get("symptoms") or []:
+        sym_id = "SYM_" + "".join(c if c.isalnum() else "_" for c in symptom.lower())
+        run_query(
+            "MERGE (s:Symptom {id: $sym_id}) SET s.name = $name "
+            "WITH s MATCH (p:Patient {id: $pid}) MERGE (p)-[:HAS_SYMPTOM]->(s)",
+            {"sym_id": sym_id, "name": symptom, "pid": pid},
+        )
+
+    for disease_name in data.get("diseases") or []:
+        existing = run_query(
+            "MATCH (d:Disease) WHERE toLower(d.name) = toLower($name) "
+            "RETURN d.id AS disease_id LIMIT 1",
+            {"name": disease_name},
+        )
+        if existing and existing[0].get("disease_id"):
+            run_query(
+                "MATCH (p:Patient {id: $pid}), (d:Disease {id: $did}) "
+                "MERGE (p)-[:HAS_DISEASE]->(d)",
+                {"pid": pid, "did": existing[0]["disease_id"]},
+            )
+        else:
+            did = "D_" + "".join(c if c.isalnum() else "_" for c in disease_name)
+            run_query(
+                "MERGE (d:Disease {id: $did}) SET d.name = $name "
+                "WITH d MATCH (p:Patient {id: $pid}) MERGE (p)-[:HAS_DISEASE]->(d)",
+                {"did": did, "name": disease_name, "pid": pid},
+            )
+
+    clinical = data.get("clinical_values") or {}
+    if clinical:
+        cs_id = f"CS_{pid}"
+        key_map = {
+            "MAP": "map", "SOFA": "sofa_score", "creatinine": "creatinine",
+            "GCS": "gcs", "lactate": "lactate",
+        }
+        set_parts = []
+        params: dict = {"cs_id": cs_id, "pid": pid}
+        for src_key, neo_key in key_map.items():
+            val = clinical.get(src_key)
+            if val is not None:
+                params[neo_key] = val
+                set_parts.append(f"c.{neo_key} = ${neo_key}")
+        for k, v in clinical.items():
+            if k not in key_map and v is not None:
+                safe = "".join(c if c.isalnum() else "_" for c in k.lower())
+                params[safe] = v
+                set_parts.append(f"c.{safe} = ${safe}")
+        if set_parts:
+            run_query(
+                f"CREATE (c:ClinicalState {{id: $cs_id}}) SET {', '.join(set_parts)} "
+                f"WITH c MATCH (p:Patient {{id: $pid}}) "
+                f"CREATE (p)-[:HAS_CLINICAL_STATE]->(c)",
+                params,
+            )
+
+    return {
+        "patient_id": pid,
+        "patient_name": name,
+        "age": age,
+        "sex": sex,
+        "symptoms": data.get("symptoms") or [],
+        "diseases": data.get("diseases") or [],
+        "clinical_values": clinical,
+    }
+
+
+def get_patients_for_comparison(patient_ids: list[str]) -> list[dict]:
+    """Fetch diseases, symptoms, violation nodes, and clinical state for specific patients."""
+    cypher = """
+    MATCH (p:Patient) WHERE p.id IN $ids
+    OPTIONAL MATCH (p)-[:HAS_DISEASE]->(d:Disease)
+    WITH p, collect(DISTINCT d) AS diseases
+    OPTIONAL MATCH (p)-[:HAS_SYMPTOM]->(s:Symptom)
+    WITH p, diseases, collect(DISTINCT s) AS symptoms
+    OPTIONAL MATCH (p)-[:HAS_VIOLATION]->(v:Violation)
+    WITH p, diseases, symptoms, collect(DISTINCT v) AS violations
+    OPTIONAL MATCH (p)-[:HAS_CLINICAL_STATE]->(c:ClinicalState)
+    RETURN p.id AS patient_id, p.name AS patient_name, p.age AS age, p.sex AS sex,
+           [d IN diseases  WHERE d IS NOT NULL | {id: d.id, name: d.name}] AS diseases,
+           [s IN symptoms  WHERE s IS NOT NULL | {id: s.id, name: s.name}] AS symptoms,
+           [v IN violations WHERE v IS NOT NULL | v.description]            AS violations,
+           CASE WHEN c IS NOT NULL THEN {
+             sofa_score: c.sofa_score, map: c.map, gcs: c.gcs,
+             creatinine: c.creatinine, lactate: c.lactate
+           } ELSE null END AS clinical_state
+    ORDER BY p.id
+    """
+    rows = run_query(cypher, {"ids": patient_ids})
+    patients = []
+    for r in rows:
+        patients.append({
+            "patient_id": r["patient_id"],
+            "patient_name": r["patient_name"],
+            "age": r.get("age"),
+            "sex": r.get("sex"),
+            "diseases": [d for d in (r.get("diseases") or []) if d and d.get("id")],
+            "symptoms": [s for s in (r.get("symptoms") or []) if s and s.get("id")],
+            "violations": [v for v in (r.get("violations") or []) if v],
+            "clinical_state": r.get("clinical_state"),
+        })
+    return patients
+
+
+def get_all_patients_graph_data():
+    """
+    Return every patient with diseases, symptoms, and clinical state.
+    Used by GET /patients-sync so the frontend can merge patients that were
+    created after the static dashboard HTML was generated.
+    """
+    cypher = """
+    MATCH (p:Patient)
+    OPTIONAL MATCH (p)-[:HAS_DISEASE]->(d:Disease)
+    WITH p, collect(DISTINCT d) AS diseases
+    OPTIONAL MATCH (p)-[:HAS_SYMPTOM]->(s:Symptom)
+    WITH p, diseases, collect(DISTINCT s) AS symptoms
+    OPTIONAL MATCH (p)-[:HAS_CLINICAL_STATE]->(c:ClinicalState)
+    RETURN p.id   AS patient_id,
+           p.name AS patient_name,
+           p.age  AS age,
+           p.sex  AS sex,
+           p.source AS source,
+           [d IN diseases  WHERE d IS NOT NULL | {id: d.id, name: d.name}] AS diseases,
+           [s IN symptoms  WHERE s IS NOT NULL | {id: s.id, name: s.name}] AS symptoms,
+           CASE WHEN c IS NOT NULL THEN {
+             sofa_score: c.sofa_score, map: c.map, gcs: c.gcs,
+             creatinine: c.creatinine, lactate: c.lactate
+           } ELSE null END AS clinical_state
+    ORDER BY p.id
+    """
+    rows = run_query(cypher)
+    for r in rows:
+        r["diseases"] = [d for d in (r.get("diseases") or []) if d and d.get("id")]
+        r["symptoms"] = [s for s in (r.get("symptoms") or []) if s and s.get("id")]
+    return rows
+
+
 def get_sepsis_guidelines():
     """
     Get sepsis guideline with recommended actions, labs, drugs, procedures, follow-up.

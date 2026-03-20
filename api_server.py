@@ -13,11 +13,18 @@ All graph data is retrieved through those modules; this API only orchestrates ca
 and returns JSON for the dashboard to display the answer and highlight the graph.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from ai_agent import ask_agent, ai_agent_query, patient_analysis_to_agent_response
+from document_upload import extract_text_from_upload, extract_medical_data
+from neo4j_ops import (
+    create_patient_from_document,
+    get_all_patients_graph_data,
+    get_patients_for_comparison,
+)
+from ai_compliance import check_patient_compliance
 
 
 app = FastAPI(
@@ -45,6 +52,19 @@ class AskAgentRequest(BaseModel):
 
 class AnalyzePatientRequest(BaseModel):
     patient_id: str
+
+
+class ConfirmPatientRequest(BaseModel):
+    patient_name: str | None = None
+    age: int | None = None
+    sex: str | None = None
+    symptoms: list[str] = []
+    diseases: list[str] = []
+    clinical_values: dict = {}
+
+
+class CompareRequest(BaseModel):
+    patient_ids: list[str]
 
 
 # -------- POST /ask-agent --------
@@ -114,6 +134,138 @@ def analyze_patient_endpoint(body: AnalyzePatientRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/upload-document")
+async def upload_document_endpoint(file: UploadFile = File(...)):
+    """
+    Upload a medical document (PDF or text), extract structured patient data.
+    Returns JSON with patient_name, age, sex, symptoms, diseases, clinical_values.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided.")
+    content = await file.read()
+    if not content or len(content) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB).")
+    try:
+        text = extract_text_from_upload(content, file.filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        data = extract_medical_data(text)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Extraction failed: {e}"
+        )
+    return data
+
+
+@app.post("/confirm-patient")
+def confirm_patient_endpoint(body: ConfirmPatientRequest):
+    """
+    Confirm extracted data and create the Patient (+ Symptom, Disease,
+    ClinicalState) nodes in Neo4j.  Returns the created patient info.
+    """
+    if not body.symptoms and not body.diseases and not body.clinical_values:
+        raise HTTPException(
+            status_code=400,
+            detail="No medical data to create — upload a document first.",
+        )
+    try:
+        result = create_patient_from_document(body.model_dump())
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/compare-patients")
+def compare_patients_endpoint(body: CompareRequest):
+    """
+    Compare 2+ patients: return per-patient data and the intersection of
+    diseases, symptoms, and violations shared by all selected patients.
+    """
+    ids = list(dict.fromkeys(body.patient_ids or []))
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="Select at least 2 patients.")
+    try:
+        patients = get_patients_for_comparison(ids)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if len(patients) < 2:
+        raise HTTPException(status_code=404, detail="Could not find 2+ of the requested patients.")
+
+    for p in patients:
+        for d in p["diseases"]:
+            try:
+                r = check_patient_compliance(
+                    p["patient_id"], p["patient_name"] or p["patient_id"],
+                    d["id"], d["name"] or d["id"],
+                )
+                for v in r.get("violations") or []:
+                    if v not in p["violations"]:
+                        p["violations"].append(v)
+            except Exception:
+                pass
+
+    disease_sets = [set(d["id"] for d in p["diseases"]) for p in patients]
+    symptom_sets = [set(s["id"] for s in p["symptoms"]) for p in patients]
+    violation_sets = [set(p["violations"]) for p in patients]
+
+    common_disease_ids = disease_sets[0].intersection(*disease_sets[1:])
+    common_symptom_ids = symptom_sets[0].intersection(*symptom_sets[1:]) if all(symptom_sets) else set()
+    common_violations = violation_sets[0].intersection(*violation_sets[1:]) if all(violation_sets) else set()
+
+    d_map: dict = {}
+    s_map: dict = {}
+    for p in patients:
+        for d in p["diseases"]:
+            d_map[d["id"]] = d
+        for s in p["symptoms"]:
+            s_map[s["id"]] = s
+
+    common = {
+        "diseases": [d_map[x] for x in sorted(common_disease_ids) if x in d_map],
+        "symptoms": [s_map[x] for x in sorted(common_symptom_ids) if x in s_map],
+        "violations": sorted(common_violations),
+    }
+
+    highlight_nodes: list[str] = []
+    common_node_ids: list[str] = []
+    for p in patients:
+        highlight_nodes.append(f"Patient:{p['patient_id']}")
+        for d in p["diseases"]:
+            highlight_nodes.append(f"Disease:{d['id']}")
+        for s in p["symptoms"]:
+            highlight_nodes.append(f"Symptom:{s['id']}")
+    for d in common["diseases"]:
+        common_node_ids.append(f"Disease:{d['id']}")
+    for s in common["symptoms"]:
+        common_node_ids.append(f"Symptom:{s['id']}")
+
+    return {
+        "patients": patients,
+        "common": common,
+        "highlight_nodes": list(dict.fromkeys(highlight_nodes)),
+        "common_node_ids": sorted(set(common_node_ids)),
+    }
+
+
+@app.get("/patients-sync")
+def patients_sync_endpoint():
+    """
+    Return every patient with diseases, symptoms, and clinical state.
+    The frontend calls this on page load (and after patient creation) so that
+    patients created after the static dashboard HTML was generated still appear
+    in the graph and filter dropdowns.
+    """
+    try:
+        return get_all_patients_graph_data()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/")
 def root():
     """Health and endpoint list."""
@@ -122,6 +274,9 @@ def root():
         "endpoints": {
             "POST /ask-agent": "Natural language question -> AI analysis + highlight_query",
             "POST /analyze-patient": "patient_id -> patient protocol analysis + highlight_query",
+            "POST /upload-document": "Upload medical document -> extracted data preview",
+            "POST /confirm-patient": "Confirm extracted data -> create Patient in Neo4j",
+            "GET  /patients-sync": "All patients + relationships for graph/filter sync",
         },
         "docs": "/docs",
     }

@@ -38,6 +38,11 @@ NODE_COLORS = {
     "Violation": "#dc2626",
     "Symptom": "#f472b6",
 }
+VIOLATION_SEVERITY_COLORS = {
+    "critical": "#dc2626",
+    "warning": "#f59e0b",
+    "normal": "#10b981",
+}
 DEFAULT_NODE_COLOR = "#94a3b8"
 EDGE_COLOR_VIOLATION = "#dc2626"
 EDGE_COLOR_COMPLIANT = "#10b981"
@@ -238,7 +243,7 @@ def build_dashboard_graph():
         label = data["label"]
         name = data["name"]
         id_prop = data.get("id_prop") or ""
-        # Enhanced tooltip HTML
+        node_color_override = None
         if label == "Patient":
             age = data["props"].get("age")
             sex = data["props"].get("sex")
@@ -259,21 +264,31 @@ def build_dashboard_graph():
             p = data["props"]
             title = f"<b>Sepsis guideline: {name}</b><br>{p.get('description') or '—'}<br>SOFA≥{p.get('sofa_threshold_high')} | Lactate>{p.get('lactate_threshold_mmol')} | MAP<{p.get('map_threshold_mmhg')}"
         elif label == "Violation":
-            desc = (data["props"] or {}).get("description") or name
-            name = (desc[:80] + "…") if len(desc) > 80 else desc  # show violation text as node label
-            title = f"<b>Violation</b><br>{desc}"
+            props = data["props"] or {}
+            desc = props.get("description") or name
+            severity = (props.get("severity") or "warning").lower()
+            reason = props.get("reason") or ""
+            name = (desc[:80] + "…") if len(desc) > 80 else desc
+            sev_label = severity.upper()
+            title = (f"<b>Violation — <span style='color:{VIOLATION_SEVERITY_COLORS.get(severity, '#f59e0b')}'>"
+                     f"{sev_label}</span></b><br>{desc}")
+            if reason:
+                title += f"<br><br><b>Reason:</b> {reason}"
+            node_color_override = VIOLATION_SEVERITY_COLORS.get(severity, "#f59e0b")
         else:
             title = f"<b>{label}: {name}</b>"
             if data["props"].get("icd10"):
                 title += f"<br>ICD-10: {data['props']['icd10']}"
+        color = node_color_override if label == "Violation" and node_color_override else node_color(label)
         net.add_node(
             nid,
             label=name,
-            color=node_color(label),
+            color=color,
             title=title,
             id_prop=id_prop,
             node_type=label,
         )
+        node_color_override = None
 
     keep_ids = set(nodes_dict.keys())
     for r in rows:
@@ -302,16 +317,26 @@ def build_dashboard_graph():
     # Stats and violations list for sidebar
     patients_with_diseases = get_patients_with_diseases()
     unique_patients = len(set(x.get("patient_id") for x in patients_with_diseases if x.get("patient_id")))
-    violations_list = [
-        {
+    violations_list = []
+    for r in compliance.get("patients_with_violations", []):
+        structured = r.get("violations_structured") or []
+        plain = r.get("violations") or []
+        items = []
+        for i, vtext in enumerate(plain):
+            sv = structured[i] if i < len(structured) else {}
+            items.append({
+                "text": vtext,
+                "severity": sv.get("severity", "warning"),
+                "reason": sv.get("reason", ""),
+            })
+        violations_list.append({
             "patient_id": r.get("patient_id"),
             "patient_name": r.get("patient_name"),
             "disease_id": r.get("disease_id"),
             "disease_name": r.get("disease_name"),
-            "violations": r.get("violations") or [],
-        }
-        for r in compliance.get("patients_with_violations", [])
-    ]
+            "violations": plain,
+            "violations_detail": items,
+        })
     stats = {
         "total_patients": unique_patients,
         "total_violations": len(compliance.get("patients_with_violations", [])),
@@ -337,13 +362,13 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   /* ===== HEADER ===== */
   .app-header { background: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 0 1.5rem; height: 64px;
     display: flex; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.04); z-index: 20; flex-shrink: 0; }
-  .app-header-inner { display: flex; align-items: center; width: 100%; gap: 1.5rem; }
+  .app-header-inner { display: flex; align-items: center; width: 100%; gap: 1rem; }
   .app-brand { display: flex; align-items: center; gap: 0.625rem; flex-shrink: 0; }
   .app-brand svg { width: 26px; height: 26px; color: #3b82f6; }
   .app-brand h1 { font-size: 1.05rem; font-weight: 700; color: #0f172a; white-space: nowrap; letter-spacing: -0.02em; }
 
   /* ===== AI SEARCH BAR ===== */
-  .ai-search-wrapper { flex: 1; max-width: 640px; }
+  .ai-search-wrapper { flex: 1; max-width: 900px; }
   .ai-search-box { display: flex; align-items: center; background: #f8fafc; border: 1.5px solid #e2e8f0;
     border-radius: 12px; padding: 0.25rem 0.25rem 0.25rem 0.75rem; transition: all 0.2s ease; }
   .ai-search-box:focus-within { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); background: #fff; }
@@ -362,7 +387,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
 
   /* ===== AI RESULT BANNER ===== */
   .ai-result-banner { background: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 0.75rem 1.5rem;
-    flex-shrink: 0; animation: slideDown 0.3s ease; }
+    flex-shrink: 0; animation: slideDown 0.3s ease; max-height: 260px; overflow-y: auto; }
   @keyframes slideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
   .ai-result-inner { max-width: 900px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.75rem; }
   .ai-result-inner .answer { flex: 1; min-width: 200px; font-size: 0.8125rem; color: #334155; line-height: 1.6; }
@@ -375,6 +400,161 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   .ai-result-inner button { padding: 0.375rem 0.875rem; background: #10b981; color: #fff; border: none; border-radius: 8px;
     font-size: 0.75rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease; font-family: inherit; }
   .ai-result-inner button:hover { background: #059669; }
+  .ai-result-inner .ai-new-question-btn { background: #3b82f6; margin-left: 0.5rem; }
+  .ai-result-inner .ai-new-question-btn:hover { background: #2563eb; }
+  .ai-result-actions { display: flex; gap: 0.5rem; align-items: center; width: 100%; margin-top: 0.25rem; }
+  .ai-structured { width: 100%; }
+  .ai-confidence { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.15rem 0.6rem;
+    border-radius: 100px; font-size: 0.625rem; font-weight: 700; letter-spacing: 0.03em;
+    text-transform: uppercase; flex-shrink: 0; vertical-align: middle; margin-left: 0.5rem; }
+  .ai-confidence.high { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+  .ai-confidence.medium { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+  .ai-confidence.low { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+  .ai-confidence .conf-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .ai-confidence.high .conf-dot { background: #16a34a; }
+  .ai-confidence.medium .conf-dot { background: #f59e0b; }
+  .ai-confidence.low .conf-dot { background: #dc2626; }
+  .ai-section { margin-bottom: 0.5rem; }
+  .ai-section:last-child { margin-bottom: 0; }
+  .ai-section-label { font-size: 0.625rem; font-weight: 700; color: #64748b; text-transform: uppercase;
+    letter-spacing: 0.05em; margin: 0 0 0.2rem; display: flex; align-items: center; gap: 0.375rem; }
+  .ai-section-label .section-icon { font-size: 0.75rem; }
+  .ai-conclusion { font-size: 0.8125rem; font-weight: 600; color: #0f172a; line-height: 1.55;
+    padding: 0.5rem 0.625rem; background: #f0f9ff; border-left: 3px solid #3b82f6;
+    border-radius: 0 8px 8px 0; margin-bottom: 0.5rem; }
+  .ai-evidence { padding: 0; margin: 0; list-style: none; }
+  .ai-evidence li { font-size: 0.75rem; color: #334155; line-height: 1.5; padding: 0.2rem 0 0.2rem 1rem;
+    position: relative; }
+  .ai-evidence li::before { content: ''; position: absolute; left: 0.25rem; top: 0.55rem;
+    width: 5px; height: 5px; border-radius: 50%; background: #3b82f6; }
+  .ai-explanation { font-size: 0.75rem; color: #475569; line-height: 1.55; white-space: pre-wrap; }
+  .ai-insufficient { padding: 0.625rem 0.75rem; background: #fffbeb; border: 1px solid #fde68a;
+    border-radius: 8px; font-size: 0.8125rem; color: #92400e; line-height: 1.5; text-align: center; }
+  .ai-comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  .ai-comparison-col { padding: 0.5rem 0.625rem; border-radius: 8px; font-size: 0.75rem; line-height: 1.5; }
+  .ai-comparison-col.common { background: #f0fdf4; border: 1px solid #bbf7d0; }
+  .ai-comparison-col.diff { background: #fef2f2; border: 1px solid #fecaca; }
+  .ai-comparison-col h6 { font-size: 0.625rem; font-weight: 700; color: #64748b; text-transform: uppercase;
+    letter-spacing: 0.04em; margin: 0 0 0.25rem; }
+  .hl-toast { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 999;
+    background: #1e40af; color: #fff; padding: 8px 20px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    box-shadow: 0 4px 16px rgba(30,64,175,0.3); pointer-events: none; transition: opacity 0.5s; }
+
+  /* ===== PATIENT SELECTOR OVERLAY ===== */
+  .patient-selector-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2000;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); display: flex; align-items: center;
+    justify-content: center; animation: fadeIn 0.3s ease; }
+  .patient-selector-card { background: #fff; border-radius: 20px; width: 440px; max-width: 92vw;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.35); animation: scaleIn 0.3s ease; overflow: hidden; }
+  .ps-header { padding: 2rem 2rem 0; text-align: center; }
+  .ps-header svg { width: 40px; height: 40px; color: #3b82f6; margin-bottom: 0.75rem; }
+  .ps-header h2 { font-size: 1.25rem; font-weight: 700; color: #0f172a; margin: 0 0 0.25rem; }
+  .ps-header p { font-size: 0.8125rem; color: #64748b; margin: 0; }
+  .ps-body { padding: 1.5rem 2rem 2rem; }
+  .ps-search { width: 100%; padding: 0.625rem 0.875rem; border: 1.5px solid #e2e8f0; border-radius: 10px;
+    font-size: 0.875rem; color: #0f172a; font-family: inherit; outline: none; margin-bottom: 0.75rem;
+    transition: border-color 0.15s; }
+  .ps-search:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+  .ps-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.25rem; }
+  .ps-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; border-radius: 10px;
+    cursor: pointer; transition: all 0.12s; border: 1.5px solid transparent; }
+  .ps-item:hover { background: #eff6ff; border-color: #bfdbfe; }
+  .ps-item .ps-dot { width: 10px; height: 10px; border-radius: 50%; background: #3b82f6; flex-shrink: 0; }
+  .ps-item .ps-name { font-weight: 600; color: #0f172a; font-size: 0.875rem; }
+  .ps-item .ps-id { color: #94a3b8; font-size: 0.75rem; margin-left: auto; }
+  .ps-footer { padding: 0 2rem 1.5rem; display: flex; justify-content: center; }
+  .ps-skip { background: none; border: none; color: #94a3b8; font-size: 0.8125rem; cursor: pointer;
+    font-family: inherit; text-decoration: underline; transition: color 0.15s; }
+  .ps-skip:hover { color: #3b82f6; }
+
+  /* ===== VIEWING BAR ===== */
+  .viewing-bar { background: #eff6ff; border-bottom: 1px solid #bfdbfe; padding: 0.375rem 1.5rem;
+    display: flex; align-items: center; gap: 0.75rem; font-size: 0.8125rem; flex-shrink: 0; }
+  .viewing-bar:empty, .viewing-bar.hidden { display: none; }
+  .viewing-label { color: #1e40af; font-weight: 600; }
+  .viewing-patient { color: #3b82f6; font-weight: 700; }
+  .viewing-change { background: none; border: none; color: #64748b; font-size: 0.75rem; cursor: pointer;
+    text-decoration: underline; font-family: inherit; margin-left: auto; }
+  .viewing-change:hover { color: #3b82f6; }
+
+  /* ===== EMPTY STATE ===== */
+  .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    flex: 1; color: #94a3b8; text-align: center; padding: 2rem; }
+  .empty-state svg { width: 48px; height: 48px; color: #cbd5e1; margin-bottom: 1rem; }
+  .empty-state p { font-size: 0.9375rem; font-weight: 500; margin: 0; }
+  .empty-state .empty-hint { font-size: 0.8125rem; margin-top: 0.375rem; color: #cbd5e1; }
+
+  /* ===== PATIENT SUMMARY CARD ===== */
+  .patient-summary-card { display: none; }
+  .patient-summary-card.active { display: block; }
+  .psc-name { font-size: 0.9375rem; font-weight: 700; color: #0f172a; margin: 0 0 0.125rem; display: flex; align-items: center; gap: 0.5rem; }
+  .psc-name .psc-dot { width: 8px; height: 8px; border-radius: 50%; background: #3b82f6; flex-shrink: 0; }
+  .psc-meta { font-size: 0.6875rem; color: #94a3b8; margin: 0 0 0.625rem; }
+  .psc-section { margin-bottom: 0.5rem; }
+  .psc-section:last-child { margin-bottom: 0; }
+  .psc-section-label { font-size: 0.625rem; font-weight: 700; color: #64748b; text-transform: uppercase;
+    letter-spacing: 0.05em; margin: 0 0 0.3rem; }
+  .psc-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+  .psc-tag { display: inline-flex; padding: 0.15rem 0.5rem; border-radius: 100px; font-size: 0.6875rem; font-weight: 500; }
+  .psc-tag.disease { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+  .psc-tag.symptom { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+  .psc-tag.violation-critical { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; font-weight: 600; }
+  .psc-tag.violation-warning { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+  .psc-tag.violation-normal { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+  .psc-tag.drug { background: #faf5ff; color: #7c3aed; border: 1px solid #ddd6fe; }
+  .psc-none { font-size: 0.75rem; color: #cbd5e1; font-style: italic; }
+  .psc-clinical-summary { font-size: 0.8125rem; color: #334155; line-height: 1.55; margin: 0 0 0.625rem;
+    padding: 0.5rem 0.625rem; background: linear-gradient(135deg, #f0f9ff 0%, #faf5ff 100%);
+    border-left: 3px solid #3b82f6; border-radius: 0 8px 8px 0; font-style: italic; }
+
+  /* ===== INSIGHT PANEL ===== */
+  .insight-panel { display: none; }
+  .insight-panel.active { display: block; }
+  .insight-list { display: flex; flex-direction: column; gap: 0.375rem; }
+  .insight-item { display: flex; align-items: flex-start; gap: 0.5rem; padding: 0.5rem 0.625rem;
+    background: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; font-size: 0.75rem; line-height: 1.45; color: #92400e; }
+  .insight-item.critical { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+  .insight-item.info { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
+  .insight-item.good { background: #f0fdf4; border-color: #bbf7d0; color: #166534; }
+  .insight-icon { flex-shrink: 0; font-size: 0.8125rem; line-height: 1; margin-top: 1px; }
+  .insight-text { flex: 1; }
+  .insight-text strong { font-weight: 600; }
+  .insight-why-toggle { display: inline-block; font-size: 0.625rem; font-weight: 600; color: inherit; opacity: 0.65;
+    cursor: pointer; margin-left: 0.375rem; padding: 0.05rem 0.375rem; border-radius: 4px; background: rgba(0,0,0,0.06);
+    transition: opacity 0.15s; vertical-align: middle; user-select: none; }
+  .insight-why-toggle:hover { opacity: 1; }
+  .insight-reasons { display: none; margin-top: 0.375rem; padding: 0.375rem 0.5rem; background: rgba(0,0,0,0.04);
+    border-radius: 6px; font-size: 0.6875rem; line-height: 1.5; }
+  .insight-reasons.open { display: block; }
+  .insight-reasons ul { margin: 0; padding-left: 1rem; list-style: disc; }
+  .insight-reasons li { margin: 0.1rem 0; }
+  .insight-reasons li .reason-val { font-weight: 600; }
+
+  /* ===== AI BASED-ON SECTION ===== */
+  .ai-based-on { margin-top: 0.5rem; width: 100%; }
+  .ai-based-on-toggle { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.6875rem; font-weight: 600;
+    color: #64748b; cursor: pointer; padding: 0.2rem 0.5rem; border-radius: 6px; background: #f1f5f9;
+    border: 1px solid #e2e8f0; transition: all 0.15s; user-select: none; }
+  .ai-based-on-toggle:hover { background: #e2e8f0; color: #334155; }
+  .ai-based-on-toggle .toggle-arrow { font-size: 0.5rem; transition: transform 0.2s; }
+  .ai-based-on-toggle.open .toggle-arrow { transform: rotate(90deg); }
+  .ai-based-on-content { display: none; margin-top: 0.375rem; padding: 0.5rem 0.625rem; background: #f8fafc;
+    border: 1px solid #e2e8f0; border-radius: 8px; font-size: 0.6875rem; line-height: 1.5; color: #475569; }
+  .ai-based-on-content.open { display: block; }
+  .ai-based-on-content .abo-section { margin-bottom: 0.375rem; }
+  .ai-based-on-content .abo-section:last-child { margin-bottom: 0; }
+  .ai-based-on-content .abo-label { font-weight: 700; font-size: 0.625rem; color: #64748b; text-transform: uppercase;
+    letter-spacing: 0.04em; margin-bottom: 0.125rem; }
+  .ai-based-on-content .abo-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+  .ai-based-on-content .abo-tag { display: inline-flex; padding: 0.1rem 0.4rem; border-radius: 100px;
+    font-size: 0.625rem; font-weight: 500; }
+  .ai-based-on-content .abo-tag.patient { background: #dbeafe; color: #1e40af; }
+  .ai-based-on-content .abo-tag.disease { background: #fef2f2; color: #dc2626; }
+  .ai-based-on-content .abo-tag.symptom { background: #eff6ff; color: #1e40af; }
+  .ai-based-on-content .abo-tag.violation { background: #fef2f2; color: #991b1b; }
+  .ai-based-on-content .abo-tag.drug { background: #faf5ff; color: #7c3aed; }
+  .ai-based-on-content .abo-tag.clinical { background: #f0fdf4; color: #166534; }
+  .ai-based-on-content .abo-tag.other { background: #f1f5f9; color: #475569; }
 
   /* ===== DASHBOARD LAYOUT ===== */
   .dashboard-wrapper { display: flex; flex: 1; min-height: 0; overflow: hidden; position: relative; }
@@ -437,7 +617,8 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   /* Upload Document */
   .upload-doc-btn { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem;
     background: #10b981; color: #fff; border: none; border-radius: 8px; font-size: 0.8125rem;
-    font-weight: 600; cursor: pointer; transition: all 0.15s ease; white-space: nowrap; font-family: inherit; flex-shrink: 0; }
+    font-weight: 600; cursor: pointer; transition: all 0.15s ease; white-space: nowrap; font-family: inherit;
+    flex-shrink: 0; align-self: center; }
   .upload-doc-btn:hover { background: #059669; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(5,150,105,0.3); }
   .upload-doc-btn svg { width: 16px; height: 16px; }
   .upload-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5);
@@ -491,9 +672,9 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   .upload-success strong { display: block; font-size: 0.875rem; margin-bottom: 0.25rem; }
 
   /* Compare Patients */
-  .compare-btn { padding: 0.3rem 0.75rem; border: 1.5px solid #8b5cf6; border-radius: 6px; background: #fff;
-    color: #7c3aed; font-size: 0.75rem; font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: inherit; white-space: nowrap; }
-  .compare-btn:hover { background: #7c3aed; color: #fff; }
+  .filter-bar button.compare-btn { padding: 0.3rem 0.75rem; border: none; border-radius: 6px; background: #7c3aed;
+    color: #fff; font-size: 0.75rem; font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: inherit; white-space: nowrap; }
+  .filter-bar button.compare-btn:hover { background: #6d28d9; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(109,40,217,0.3); }
   .compare-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5);
     z-index: 1000; display: flex; align-items: center; justify-content: center; animation: fadeIn 0.2s ease; }
   .compare-panel { background: #fff; border-radius: 16px; width: 480px; max-width: 90vw; max-height: 80vh;
@@ -541,17 +722,95 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   .compare-section .tag.unique { background: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0; }
   .compare-section .tag.violation { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
   .compare-none { color: #94a3b8; font-size: 0.75rem; font-style: italic; margin: 0; }
+
+  /* Patient-Aware AI context chips */
+  .ai-context-bar { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; padding: 0.35rem 0; font-size: 0.6875rem; min-height: 0; }
+  .ai-context-bar:empty { display: none; }
+  .ai-ctx-label { color: #64748b; font-weight: 600; white-space: nowrap; }
+  .ai-ctx-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.125rem 0.5rem; border-radius: 100px;
+    background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; font-size: 0.6875rem; font-weight: 500; cursor: default; }
+  .ai-ctx-chip .ctx-remove { cursor: pointer; font-size: 0.75rem; color: #93c5fd; margin-left: 0.125rem; line-height: 1; }
+  .ai-ctx-chip .ctx-remove:hover { color: #dc2626; }
+  .ai-ctx-clear { color: #94a3b8; cursor: pointer; font-size: 0.625rem; text-decoration: underline; margin-left: 0.25rem; }
+  .ai-ctx-clear:hover { color: #dc2626; }
+  .ai-ctx-hint { color: #94a3b8; font-size: 0.625rem; font-style: italic; }
+  .ai-answer-smart { white-space: pre-wrap; line-height: 1.65; }
+  .ai-answer-smart b, .ai-answer-smart strong { font-weight: 600; }
+
+  /* Clinical Timeline */
+  .timeline-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.55);
+    z-index: 1100; display: flex; align-items: center; justify-content: center; animation: fadeIn 0.2s ease; }
+  .timeline-panel { background: #fff; border-radius: 16px; width: 920px; max-width: 95vw; max-height: 90vh;
+    display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.18); animation: scaleIn 0.2s ease; }
+  .timeline-header { padding: 1rem 1.5rem; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+  .timeline-header h3 { font-size: 1rem; font-weight: 700; color: #0f172a; margin: 0; }
+  .timeline-header .tl-patient-info { font-size: 0.75rem; color: #64748b; margin-left: 0.75rem; }
+  .timeline-header-left { display: flex; align-items: center; }
+  .timeline-body { padding: 1rem 1.5rem; overflow-y: auto; flex: 1; min-height: 0; }
+  .tl-charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+  .tl-chart-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 0.75rem; }
+  .tl-chart-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
+  .tl-chart-title span { font-size: 0.75rem; font-weight: 600; color: #0f172a; }
+  .tl-trend { font-size: 0.625rem; font-weight: 600; padding: 0.125rem 0.5rem; border-radius: 100px; }
+  .tl-trend.rising { background: #fef2f2; color: #dc2626; }
+  .tl-trend.falling { background: #f0fdf4; color: #16a34a; }
+  .tl-trend.stable { background: #f1f5f9; color: #64748b; }
+  .tl-trend.good { background: #f0fdf4; color: #16a34a; }
+  .tl-trend.bad { background: #fef2f2; color: #dc2626; }
+  .tl-chart-card canvas { width: 100% !important; height: 160px !important; }
+  .tl-events-section { margin-top: 0.5rem; }
+  .tl-events-title { font-size: 0.8125rem; font-weight: 700; color: #0f172a; margin: 0 0 0.5rem; }
+  .tl-events-list { display: flex; flex-direction: column; gap: 0.375rem; }
+  .tl-event { display: flex; align-items: flex-start; gap: 0.625rem; font-size: 0.75rem; color: #334155; padding: 0.375rem 0.625rem; border-radius: 8px; background: #f8fafc; }
+  .tl-event-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 0.25rem; }
+  .tl-event-dot.encounter { background: #3b82f6; }
+  .tl-event-dot.drug { background: #10b981; }
+  .tl-event-dot.procedure { background: #f59e0b; }
+  .tl-event-dot.lab { background: #8b5cf6; }
+  .tl-event-dot.treatment { background: #ef4444; }
+  .tl-event-date { color: #94a3b8; font-size: 0.6875rem; min-width: 60px; flex-shrink: 0; }
+  .tl-no-events { color: #94a3b8; font-size: 0.75rem; font-style: italic; }
+  .view-timeline-btn { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.375rem 0.75rem;
+    background: #7c3aed; color: #fff; border: none; border-radius: 6px; font-size: 0.6875rem;
+    font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: inherit; margin-top: 0.5rem; }
+  .view-timeline-btn:hover { background: #6d28d9; }
+  .view-timeline-btn svg { width: 14px; height: 14px; }
+
+  /* Violation severity badges */
+  .sev-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 100px; font-size: 0.5625rem;
+    font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; vertical-align: middle; margin-right: 0.25rem; }
+  .sev-badge.critical { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+  .sev-badge.warning { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
+  .sev-badge.normal { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+  .violation-reason { display: block; font-size: 0.6875rem; color: #64748b; margin-top: 0.125rem; line-height: 1.4; font-style: italic; }
 </style>
+<div id="patientSelectorOverlay" class="patient-selector-overlay">
+  <div class="patient-selector-card">
+    <div class="ps-header">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      <h2>Clinical Dashboard</h2>
+      <p>Select a patient to begin, or skip to view all data</p>
+    </div>
+    <div class="ps-body">
+      <input type="text" class="ps-search" id="psSearch" placeholder="Search patients..." oninput="filterPsPatients(this.value)">
+      <div class="ps-list" id="psList"></div>
+    </div>
+    <div class="ps-footer">
+      <button class="ps-skip" onclick="dismissPatientSelector()">Skip &mdash; view all patients</button>
+    </div>
+  </div>
+</div>
+<div id="viewingBar" class="viewing-bar hidden"></div>
 <header class="app-header">
   <div class="app-header-inner">
     <div class="app-brand">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-      <h1>Clinical Compliance Dashboard</h1>
+      <h1>Clinical Dashboard</h1>
     </div>
     <div class="ai-search-wrapper">
       <div class="ai-search-box">
         <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-        <textarea id="aiQuestion" placeholder="Ask about patient compliance, violations, treatments..." rows="1"></textarea>
+        <textarea id="aiQuestion" placeholder="Ask AI — click patient nodes for context, e.g. 'What violations does this patient have?'" rows="1"></textarea>
         <input type="hidden" id="aiApiUrl" value="http://localhost:8000" />
         <button type="button" id="aiAskBtn" onclick="askAi()">Ask AI</button>
       </div>
@@ -563,6 +822,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     </button>
   </div>
 </header>
+<div id="aiContextBar" class="ai-context-bar" style="padding:0.25rem 1.5rem;border-bottom:1px solid #e2e8f0;background:#f8fafc;"></div>
 <div id="uploadModal" class="upload-modal" style="display:none;" onclick="if(event.target===this)closeUploadModal()">
   <div class="upload-panel">
     <div class="upload-panel-header">
@@ -605,16 +865,66 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     </div>
   </div>
 </div>
+<div id="timelineModal" style="display:none;" class="timeline-modal" onclick="if(event.target===this)closeTimeline()">
+  <div class="timeline-panel">
+    <div class="timeline-header">
+      <div class="timeline-header-left">
+        <h3 id="timelineTitle">Clinical Timeline</h3>
+        <span class="tl-patient-info" id="timelineInfo"></span>
+      </div>
+      <button class="upload-panel-close" onclick="closeTimeline()">&times;</button>
+    </div>
+    <div class="timeline-body" id="timelineBody">
+      <div class="tl-charts-grid">
+        <div class="tl-chart-card">
+          <div class="tl-chart-title"><span>SOFA Score</span><span class="tl-trend" id="trendSofa"></span></div>
+          <canvas id="chartSofa"></canvas>
+        </div>
+        <div class="tl-chart-card">
+          <div class="tl-chart-title"><span>MAP (mmHg)</span><span class="tl-trend" id="trendMap"></span></div>
+          <canvas id="chartMap"></canvas>
+        </div>
+        <div class="tl-chart-card">
+          <div class="tl-chart-title"><span>Creatinine (mg/dL)</span><span class="tl-trend" id="trendCreat"></span></div>
+          <canvas id="chartCreat"></canvas>
+        </div>
+        <div class="tl-chart-card">
+          <div class="tl-chart-title"><span>GCS</span><span class="tl-trend" id="trendGcs"></span></div>
+          <canvas id="chartGcs"></canvas>
+        </div>
+      </div>
+      <div class="tl-chart-card" style="margin-bottom:1rem;">
+        <div class="tl-chart-title"><span>Lactate (mmol/L)</span><span class="tl-trend" id="trendLactate"></span></div>
+        <canvas id="chartLactate"></canvas>
+      </div>
+      <div class="tl-events-section">
+        <p class="tl-events-title">Clinical Events</p>
+        <div class="tl-events-list" id="timelineEvents"></div>
+      </div>
+    </div>
+  </div>
+</div>
 <div id="aiResult" class="ai-result-banner" style="display:none;">
   <div class="ai-result-inner">
     <span id="aiViolationBadge" class="violation-badge"></span>
     <div id="aiAnswer" class="answer"></div>
     <div id="aiMeta" class="meta"></div>
-    <button type="button" id="aiHighlightBtn" onclick="highlightFromAi()" style="display:none;">Highlight in Graph</button>
+    <div id="aiBasedOn" class="ai-based-on" style="display:none;"></div>
+    <div class="ai-result-actions">
+      <button type="button" class="ai-new-question-btn" onclick="resetAiQuestion()">New Question</button>
+    </div>
   </div>
 </div>
 <div class="dashboard-wrapper">
   <aside class="dashboard-sidebar" id="sidebar">
+    <div class="sidebar-card patient-summary-card" id="patientSummaryCard">
+      <h3>Patient Summary</h3>
+      <div id="pscContent"></div>
+    </div>
+    <div class="sidebar-card insight-panel" id="insightPanel">
+      <h3>Key Insights</h3>
+      <div class="insight-list" id="insightList"></div>
+    </div>
     <div class="sidebar-card" id="statsPanel">
       <h3>Overview</h3>
       <p id="statPatients">Total patients: &mdash;</p>
@@ -631,6 +941,12 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       <ul class="node-legend" id="nodeLegend"></ul>
       <h4>Edges</h4>
       <ul class="edge-legend" id="edgeLegend"></ul>
+      <h4>Violation Severity</h4>
+      <div class="color-coding">
+        <span><span class="color-dot" style="background:#dc2626"></span> Critical</span>
+        <span><span class="color-dot" style="background:#f59e0b"></span> Warning</span>
+        <span><span class="color-dot" style="background:#10b981"></span> Normal / Compliant</span>
+      </div>
       <h4>Edge Colors</h4>
       <div class="color-coding">
         <span><span class="color-dot" style="background:#dc2626"></span> Violation</span>
@@ -643,7 +959,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   <div class="dashboard-main">
     <div class="filter-bar">
       <label>Doctor</label><select id="filterDoctor" onchange="applyFilter()"><option value="">All</option></select>
-      <label>Patient</label><select id="filterPatient" onchange="applyFilter()"><option value="">All</option></select>
+      <select id="filterPatient" style="display:none;"><option value="">All</option></select>
       <label>Disease</label><select id="filterDisease" onchange="applyFilter()"><option value="">All</option></select>
       <label>Compliance</label><select id="filterCompliance" onchange="applyFilter()"><option value="">All</option><option value="violation">Violations only</option><option value="compliant">Compliant only</option></select>
       <label>Hospital</label><select id="filterHospital" onchange="applyFilter()"><option value="">All</option></select>
@@ -677,9 +993,22 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var vList = document.getElementById('violationsList');
     vList.innerHTML = '';
     (DASHBOARD_STATS.violations_list || []).forEach(function(v) {
+      var detail = v.violations_detail || [];
       var li = document.createElement('li');
-      li.style.marginBottom = '0.5rem';
-      li.innerHTML = '<strong>' + (v.patient_name || v.patient_id) + '</strong> / ' + (v.disease_name || v.disease_id) + ': ' + (v.violations && v.violations.length ? v.violations.join('; ') : '—');
+      li.style.marginBottom = '0.625rem';
+      var html = '<strong>' + (v.patient_name || v.patient_id) + '</strong> / ' + (v.disease_name || v.disease_id) + ':';
+      if (detail.length) {
+        detail.forEach(function(d) {
+          var sev = d.severity || 'warning';
+          html += '<br><span class="sev-badge ' + sev + '">' + sev + '</span>' + (d.text || '');
+          if (d.reason) html += '<span class="violation-reason">' + d.reason + '</span>';
+        });
+      } else if (v.violations && v.violations.length) {
+        html += ' ' + v.violations.join('; ');
+      } else {
+        html += ' —';
+      }
+      li.innerHTML = html;
       vList.appendChild(li);
     });
     if (!(DASHBOARD_STATS.violations_list || []).length) {
@@ -716,6 +1045,13 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     } else {
       title.textContent = nodeData.label + ' — Info';
       content.innerHTML = 'Node type: <strong>' + (nodeData.node_type || '') + '</strong>. Click a Disease, Drug, or Procedure node for protocol explanation (why recommended).';
+    }
+    if (nodeData.node_type === 'Patient' && nodeData.id_prop) {
+      content.innerHTML += '<button type="button" class="view-timeline-btn" onclick="openTimeline(\\'' + nodeData.id_prop + '\\')">'
+        + '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>'
+        + 'View Timeline</button>';
+      renderPatientSummary(nodeData.id_prop);
+      renderInsightPanel(nodeData.id_prop);
     }
   }
   function getConnectedNodeIds(startId) {
@@ -921,6 +1257,82 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     fillSelect('filterDisease', diseases);
     fillSelect('filterHospital', hospitals);
   }
+  /* ---- Patient-Aware AI: selection tracking ---- */
+  var _aiSelectedPatients = [];
+
+  function togglePatientSelection(nodeId) {
+    var allN = window._allNodes || [];
+    var nodeData = null;
+    allN.forEach(function(n) { if (n.id === nodeId) nodeData = n; });
+    if (!nodeData || nodeData.node_type !== 'Patient') return false;
+    var pid = nodeData.id_prop || nodeData.id;
+    var idx = -1;
+    _aiSelectedPatients.forEach(function(p, i) { if (p.pid === pid) idx = i; });
+    if (idx >= 0) {
+      _aiSelectedPatients.splice(idx, 1);
+    } else {
+      _aiSelectedPatients.push({ pid: pid, name: nodeData.label || pid, visId: nodeId });
+    }
+    renderAiContextBar();
+    updatePatientSelectionVisuals();
+    return true;
+  }
+
+  function removePatientFromAi(pid) {
+    _aiSelectedPatients = _aiSelectedPatients.filter(function(p) { return p.pid !== pid; });
+    renderAiContextBar();
+    updatePatientSelectionVisuals();
+  }
+
+  function clearAiPatients() {
+    _aiSelectedPatients = [];
+    renderAiContextBar();
+    updatePatientSelectionVisuals();
+  }
+
+  function renderAiContextBar() {
+    var bar = document.getElementById('aiContextBar');
+    if (!bar) return;
+    if (!_aiSelectedPatients.length) {
+      bar.innerHTML = '<span class="ai-ctx-hint">Click a patient node to add context for AI</span>';
+      return;
+    }
+    var html = '<span class="ai-ctx-label">AI context:</span>';
+    _aiSelectedPatients.forEach(function(p) {
+      html += '<span class="ai-ctx-chip">' + p.name + ' (' + p.pid + ')';
+      html += '<span class="ctx-remove" onclick="event.stopPropagation();removePatientFromAi(\\'' + p.pid + '\\')">&times;</span></span>';
+    });
+    html += '<span class="ai-ctx-clear" onclick="clearAiPatients()">clear all</span>';
+    bar.innerHTML = html;
+  }
+
+  function updatePatientSelectionVisuals() {
+    var net = getNet();
+    if (!net || !net.body || !net.body.data) return;
+    var nodes = net.body.data.nodes;
+    var selectedPids = {};
+    _aiSelectedPatients.forEach(function(p) { selectedPids[p.pid] = true; });
+    var updates = [];
+    (window._allNodes || []).forEach(function(n) {
+      if (n.node_type !== 'Patient') return;
+      var pid = n.id_prop || n.id;
+      var existing = nodes.get(n.id);
+      if (!existing) return;
+      if (selectedPids[pid]) {
+        updates.push({ id: n.id, borderWidth: 3, shapeProperties: { borderDashes: false },
+          color: { background: existing.color && existing.color.background || '#60a5fa', border: '#2563eb' } });
+      } else {
+        var orig = null;
+        (window._allNodes || []).forEach(function(o) { if (o.id === n.id) orig = o; });
+        if (orig) updates.push({ id: n.id, borderWidth: orig.borderWidth || 1, color: orig.color });
+      }
+    });
+    if (updates.length) nodes.update(updates);
+  }
+
+  window.removePatientFromAi = removePatientFromAi;
+  window.clearAiPatients = clearAiPatients;
+
   var lastAiResponse = null;
   function askAi() {
     var q = (document.getElementById('aiQuestion') && document.getElementById('aiQuestion').value || '').trim();
@@ -935,10 +1347,14 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     resultEl.style.display = 'none';
     loadingEl.style.display = 'block';
     if (btn) btn.disabled = true;
+    var payload = { question: q };
+    if (_aiSelectedPatients.length) {
+      payload.selected_patients = _aiSelectedPatients.map(function(p) { return p.pid; });
+    }
     fetch(apiUrl + '/ask-agent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: q })
+      body: JSON.stringify(payload)
     }).then(function(r) {
       if (!r.ok) throw new Error('API error: ' + r.status);
       return r.json();
@@ -947,8 +1363,13 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       var answerEl = document.getElementById('aiAnswer');
       var badgeEl = document.getElementById('aiViolationBadge');
       var metaEl = document.getElementById('aiMeta');
-      var highlightBtn = document.getElementById('aiHighlightBtn');
-      if (answerEl) { answerEl.textContent = data.answer || 'No answer.'; answerEl.classList.remove('error'); }
+      var highlightBtn = null;
+      if (answerEl) {
+        answerEl.classList.remove('error');
+        var raw = data.answer || 'No answer.';
+        answerEl.innerHTML = buildStructuredAiHtml(raw, data);
+        answerEl.classList.add('ai-answer-smart');
+      }
       if (metaEl) metaEl.classList.remove('error');
       if (badgeEl) {
         badgeEl.textContent = data.violation ? 'Protocol violation' : 'Compliant';
@@ -959,7 +1380,9 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       if ((data.actual_treatment || []).length) meta.push('Actual: ' + data.actual_treatment.join(', '));
       if (metaEl) metaEl.innerHTML = meta.join('<br/>');
       if (highlightBtn) highlightBtn.style.display = ((data.highlight_nodes || []).length || (data.paths || []).length) ? 'inline-block' : 'none';
+      renderAiBasedOn(data);
       resultEl.style.display = 'block';
+      if ((data.highlight_nodes || []).length || (data.paths || []).length) highlightFromAi();
     }).catch(function(err) {
       lastAiResponse = null;
       var answerEl = document.getElementById('aiAnswer');
@@ -967,51 +1390,340 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       document.getElementById('aiViolationBadge').style.display = 'none';
       document.getElementById('aiMeta').textContent = err.message || 'Check the API URL (e.g. http://localhost:8000) and try again.';
       document.getElementById('aiMeta').classList.add('error');
-      document.getElementById('aiHighlightBtn').style.display = 'none';
+      try { document.getElementById('aiHighlightBtn') && (document.getElementById('aiHighlightBtn').style.display = 'none'); } catch(e) {}
       resultEl.style.display = 'block';
     }).then(function() {
       loadingEl.style.display = 'none';
       if (btn) btn.disabled = false;
     });
   }
+
+  function resetAiQuestion() {
+    document.getElementById('aiResult').style.display = 'none';
+    var abo = document.getElementById('aiBasedOn');
+    if (abo) { abo.style.display = 'none'; abo.innerHTML = ''; }
+    var textarea = document.getElementById('aiQuestion');
+    if (textarea) { textarea.value = ''; textarea.focus(); }
+    lastAiResponse = null;
+    clearAiHighlight();
+    if (_patientContext && _patientContext.selected) {
+      filterGraphToPatient();
+    }
+  }
+  window.resetAiQuestion = resetAiQuestion;
+
+  function renderAiBasedOn(data) {
+    var el = document.getElementById('aiBasedOn');
+    if (!el) return;
+    var hNodes = data.highlight_nodes || [];
+    if (!hNodes.length && (data.paths || []).length) {
+      var seen = {};
+      (data.paths || []).forEach(function(p) { (p.nodes || []).forEach(function(n) { seen[n] = true; }); });
+      hNodes = Object.keys(seen);
+    }
+    if (!hNodes.length && !(data.protocol_expected || []).length && !(data.actual_treatment || []).length) {
+      el.style.display = 'none'; return;
+    }
+    var groups = { Patient: [], Disease: [], Symptom: [], Violation: [], Drug: [], ClinicalState: [], other: [] };
+    var typeMap = { patient: 'Patient', disease: 'Disease', symptom: 'Symptom', violation: 'Violation', drug: 'Drug', clinicalstate: 'ClinicalState', procedure: 'other', recommendedaction: 'other', sepsisguideline: 'other' };
+    var allN = window._allNodes || [];
+    hNodes.forEach(function(s) {
+      var idx = s.indexOf(':');
+      var type = idx >= 0 ? s.substring(0, idx) : '';
+      var idProp = idx >= 0 ? s.substring(idx + 1) : s;
+      var label = idProp;
+      allN.forEach(function(n) { if (n.id_prop === idProp && (!type || (n.node_type || '').toLowerCase() === type.toLowerCase())) label = n.label || idProp; });
+      var gk = typeMap[(type || '').toLowerCase()] || 'other';
+      groups[gk].push(label);
+    });
+    var labelMap = { Patient: 'Patients', Disease: 'Diseases', Symptom: 'Symptoms', Violation: 'Violations', Drug: 'Drugs', ClinicalState: 'Clinical States', other: 'Other' };
+    var clsMap = { Patient: 'patient', Disease: 'disease', Symptom: 'symptom', Violation: 'violation', Drug: 'drug', ClinicalState: 'clinical', other: 'other' };
+    var sections = [];
+    Object.keys(groups).forEach(function(k) {
+      var items = groups[k];
+      items = items.filter(function(v, i, a) { return a.indexOf(v) === i; });
+      if (!items.length) return;
+      var h = '<div class="abo-section"><div class="abo-label">' + labelMap[k] + '</div><div class="abo-tags">';
+      items.forEach(function(lbl) { h += '<span class="abo-tag ' + clsMap[k] + '">' + lbl + '</span>'; });
+      h += '</div></div>';
+      sections.push(h);
+    });
+    if ((data.protocol_expected || []).length) {
+      var h = '<div class="abo-section"><div class="abo-label">Expected Protocol</div><div class="abo-tags">';
+      data.protocol_expected.forEach(function(x) { h += '<span class="abo-tag other">' + x + '</span>'; });
+      h += '</div></div>';
+      sections.push(h);
+    }
+    if ((data.actual_treatment || []).length) {
+      var h = '<div class="abo-section"><div class="abo-label">Actual Treatment</div><div class="abo-tags">';
+      data.actual_treatment.forEach(function(x) { h += '<span class="abo-tag drug">' + x + '</span>'; });
+      h += '</div></div>';
+      sections.push(h);
+    }
+    if (!sections.length) { el.style.display = 'none'; return; }
+    var uid = 'aboContent';
+    el.innerHTML = '<span class="ai-based-on-toggle" onclick="var c=document.getElementById(\\'' + uid + '\\');c.classList.toggle(\\'open\\');this.classList.toggle(\\'open\\')">'
+      + '<span class="toggle-arrow">\\u25b6</span> Based on ' + hNodes.length + ' data points</span>'
+      + '<div class="ai-based-on-content" id="' + uid + '">' + sections.join('') + '</div>';
+    el.style.display = 'block';
+  }
+
+  function _escHtml(t) { return (t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function _mdInline(s) {
+    s = s.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
+    s = s.replace(/^### (.+)$/gm, '<strong>$1</strong>');
+    s = s.replace(/^## (.+)$/gm, '<strong>$1</strong>');
+    return s;
+  }
+
+  function _computeConfidence(data) {
+    var hn = (data.highlight_nodes || []).length;
+    var paths = (data.paths || []).length;
+    var pe = (data.protocol_expected || []).length;
+    var at = (data.actual_treatment || []).length;
+    var total = hn + paths + pe + at;
+    if (total >= 15) return { level: 'high', label: 'High confidence', score: total };
+    if (total >= 5) return { level: 'medium', label: 'Medium confidence', score: total };
+    return { level: 'low', label: 'Low confidence', score: total };
+  }
+
+  function _isComparisonResponse(text) {
+    var lower = text.toLowerCase();
+    return lower.indexOf('common') >= 0 && (lower.indexOf('differ') >= 0 || lower.indexOf('unique') >= 0);
+  }
+
+  function _splitIntoBullets(text) {
+    var lines = text.split('\\n');
+    var bullets = [];
+    lines.forEach(function(l) {
+      var t = l.replace(/^[\\s]*[•\\-\\d.]+[\\s.):]*/, '').trim();
+      if (t.length > 5) bullets.push(t);
+    });
+    return bullets;
+  }
+
+  function _parseStructured(rawText) {
+    var lines = rawText.split('\\n');
+    var conclusion = '';
+    var evidence = [];
+    var explanation = [];
+    var commonFindings = [];
+    var differences = [];
+    var phase = 'scan';
+
+    lines.forEach(function(line) {
+      var t = line.trim();
+      var lower = t.toLowerCase();
+      if (!t) return;
+      if (lower.indexOf('common finding') >= 0 || lower.indexOf('common disease') >= 0 || lower.indexOf('common symptom') >= 0 || lower.indexOf('similarities') >= 0) { phase = 'common'; return; }
+      if (lower.indexOf('differ') >= 0 || lower.indexOf('unique') >= 0) { phase = 'diff'; return; }
+      if (phase === 'common') { var b = t.replace(/^[•\\-\\d.]+[\\s.):]*/, '').trim(); if (b) commonFindings.push(b); return; }
+      if (phase === 'diff') { var b = t.replace(/^[•\\-\\d.]+[\\s.):]*/, '').trim(); if (b) differences.push(b); return; }
+
+      var isBullet = /^[•\\-]/.test(t) || /^\\d+[.)\\s]/.test(t);
+      if (isBullet) {
+        var b = t.replace(/^[•\\-\\d.]+[\\s.):]*/, '').trim();
+        if (b) evidence.push(b);
+      } else if (!conclusion && t.length > 15 && !lower.startsWith('##') && !lower.startsWith('based on')) {
+        conclusion = t;
+      } else {
+        explanation.push(t);
+      }
+    });
+
+    if (!conclusion && evidence.length) conclusion = evidence.shift();
+    if (!conclusion && explanation.length) { conclusion = explanation.shift(); }
+
+    return { conclusion: conclusion, evidence: evidence, explanation: explanation.join(' '), commonFindings: commonFindings, differences: differences };
+  }
+
+  function buildStructuredAiHtml(rawText, data) {
+    var conf = _computeConfidence(data);
+    var isComp = _isComparisonResponse(rawText) || (data.selected_patients && data.selected_patients.length > 1);
+    var parsed = _parseStructured(_escHtml(rawText));
+    var html = '<div class="ai-structured">';
+
+    if (conf.score === 0 && !parsed.conclusion) {
+      html += '<div class="ai-insufficient">Insufficient data to provide a confident conclusion. Try selecting a patient for context or rephrasing your question.</div>';
+      html += '</div>';
+      return html;
+    }
+
+    html += '<div class="ai-section"><div class="ai-section-label"><span class="section-icon">\\u2192</span> Conclusion';
+    html += '<span class="ai-confidence ' + conf.level + '"><span class="conf-dot"></span>' + conf.label + '</span>';
+    html += '</div>';
+    html += '<div class="ai-conclusion">' + _mdInline(parsed.conclusion || 'Analysis complete.') + '</div></div>';
+
+    if (isComp && (parsed.commonFindings.length || parsed.differences.length)) {
+      html += '<div class="ai-section"><div class="ai-section-label"><span class="section-icon">\\u2194</span> Comparison</div>';
+      html += '<div class="ai-comparison-grid">';
+      html += '<div class="ai-comparison-col common"><h6>Common findings</h6>';
+      if (parsed.commonFindings.length) parsed.commonFindings.forEach(function(f) { html += '&bull; ' + _mdInline(f) + '<br>'; });
+      else html += '<em style="color:#94a3b8">None identified</em>';
+      html += '</div>';
+      html += '<div class="ai-comparison-col diff"><h6>Differences</h6>';
+      if (parsed.differences.length) parsed.differences.forEach(function(f) { html += '&bull; ' + _mdInline(f) + '<br>'; });
+      else html += '<em style="color:#94a3b8">None identified</em>';
+      html += '</div></div></div>';
+    }
+
+    if (parsed.evidence.length) {
+      html += '<div class="ai-section"><div class="ai-section-label"><span class="section-icon">\\u2022</span> Evidence</div>';
+      html += '<ul class="ai-evidence">';
+      parsed.evidence.forEach(function(e) { html += '<li>' + _mdInline(e) + '</li>'; });
+      html += '</ul></div>';
+    }
+
+    if (parsed.explanation && parsed.explanation.trim()) {
+      html += '<div class="ai-section"><div class="ai-section-label"><span class="section-icon">\\u24d8</span> Explanation</div>';
+      html += '<div class="ai-explanation">' + _mdInline(parsed.explanation) + '</div></div>';
+    }
+
+    html += '</div>';
+    return html;
+  }
+  var _aiHighlightActive = false;
+
   function highlightFromAi() {
     if (!lastAiResponse) return;
     var net = getNet();
-    if (!net || !window._allNodes || !window._allEdges) { alert('Graph not ready. Wait for it to load.'); return; }
-    var nodes = lastAiResponse.highlight_nodes || [];
-    if (!nodes.length && (lastAiResponse.paths || []).length) {
-      var seen = {};
-      (lastAiResponse.paths[0].nodes || []).forEach(function(n) { seen[n] = true; });
-      nodes = Object.keys(seen);
-    }
-    if (!nodes.length) { alert('No nodes to highlight.'); return; }
+    if (!net || !net.body || !net.body.data) return;
+    var nodeDS = net.body.data.nodes;
+    var edgeDS = net.body.data.edges;
+    if (!nodeDS || !edgeDS) return;
     var allNodes = window._allNodes;
     var allEdges = window._allEdges;
-    var visibleIds = {};
-    nodes.forEach(function(s) {
-      var parts = s.indexOf(':') >= 0 ? s.split(':') : [null, s];
-      var type = parts[0];
-      var idProp = parts[1];
+    if (!allNodes || !allNodes.length) {
+      allNodes = toNodeArray(nodeDS.get());
+      allEdges = toNodeArray(edgeDS.get());
+      window._allNodes = allNodes;
+      window._allEdges = allEdges;
+    }
+
+    var hNodes = lastAiResponse.highlight_nodes || [];
+    if (!hNodes.length && (lastAiResponse.paths || []).length) {
+      var seen = {};
+      (lastAiResponse.paths || []).forEach(function(p) {
+        (p.nodes || []).forEach(function(n) { seen[n] = true; });
+      });
+      hNodes = Object.keys(seen);
+    }
+    if (!hNodes.length) return;
+
+    var matchedIds = {};
+    hNodes.forEach(function(s) {
+      var idx = s.indexOf(':');
+      var type = idx >= 0 ? s.substring(0, idx) : null;
+      var idProp = idx >= 0 ? s.substring(idx + 1) : s;
       allNodes.forEach(function(n) {
-        if (n.id_prop === idProp && (!type || (n.node_type || '').toLowerCase() === (type || '').toLowerCase())) visibleIds[n.id] = true;
+        if (n.id_prop === idProp && (!type || (n.node_type || '').toLowerCase() === (type || '').toLowerCase())) matchedIds[n.id] = true;
       });
     });
-    var filteredNodes = allNodes.filter(function(n) { return visibleIds[n.id]; });
-    var filteredEdges = allEdges.filter(function(e) { return visibleIds[e.from] && visibleIds[e.to]; });
+    var matchCount = Object.keys(matchedIds).length;
+    if (matchCount === 0) return;
+
+    var neighborIds = {};
+    allEdges.forEach(function(e) {
+      if (matchedIds[e.from] || matchedIds[e.to]) {
+        neighborIds[e.from] = true; neighborIds[e.to] = true;
+      }
+    });
+
+    var nodeUpdates = [];
+    allNodes.forEach(function(n) {
+      if (matchedIds[n.id]) {
+        var bg = (n.color && typeof n.color === 'object') ? n.color.background : (n.color || '#3b82f6');
+        nodeUpdates.push({
+          id: n.id,
+          color: { background: bg, border: '#1e40af', highlight: { background: bg, border: '#1e40af' } },
+          font: { color: '#0f172a', size: 14, bold: true },
+          size: Math.max((n.size || 16), 22),
+          borderWidth: 3,
+          shadow: { enabled: true, color: 'rgba(59,130,246,0.4)', size: 14, x: 0, y: 0 }
+        });
+      } else if (neighborIds[n.id]) {
+        nodeUpdates.push({
+          id: n.id,
+          color: { background: '#e2e8f0', border: '#cbd5e1', highlight: { background: '#e2e8f0', border: '#cbd5e1' } },
+          font: { color: '#94a3b8', size: 10 },
+          size: Math.max(8, (n.size || 16) * 0.65),
+          borderWidth: 0.5, shadow: false
+        });
+      } else {
+        nodeUpdates.push({
+          id: n.id,
+          color: { background: '#f1f5f9', border: '#e2e8f0', highlight: { background: '#f1f5f9', border: '#e2e8f0' } },
+          font: { color: '#cbd5e1', size: 8 },
+          size: Math.max(6, (n.size || 16) * 0.5),
+          borderWidth: 0, shadow: false
+        });
+      }
+    });
+
+    var edgeUpdates = [];
+    allEdges.forEach(function(e) {
+      if (matchedIds[e.from] && matchedIds[e.to]) {
+        var ec = (e.color && typeof e.color === 'string') ? e.color : ((e.color && e.color.color) || '#3b82f6');
+        edgeUpdates.push({ id: e.id, color: { color: ec, highlight: ec }, width: Math.max((e.width || 1) * 1.5, 2) });
+      } else if (matchedIds[e.from] || matchedIds[e.to]) {
+        edgeUpdates.push({ id: e.id, color: { color: '#cbd5e1', highlight: '#cbd5e1' }, width: 0.5 });
+      } else {
+        edgeUpdates.push({ id: e.id, color: { color: '#f1f5f9', highlight: '#f1f5f9' }, width: 0.3 });
+      }
+    });
+
     try {
-      net.setOptions({ physics: { enabled: false } });
-      net.setData({ nodes: new vis.DataSet(filteredNodes), edges: new vis.DataSet(filteredEdges) });
-      window._currentNodes = new vis.DataSet(filteredNodes);
-      window._currentEdges = new vis.DataSet(filteredEdges);
-      net.setOptions({ physics: { enabled: true, solver: 'repulsion', repulsion: { nodeDistance: 220, centralGravity: 0.03, springLength: 180, springConstant: 0.05 }, stabilization: { enabled: true, iterations: 150 } } });
-      net.once('stabilizationIterationsDone', function() {
-        net.off('stabilizationIterationsDone', arguments.callee);
-        net.setOptions({ physics: { enabled: false } });
-        try { if (net.fit) net.fit({ animation: { duration: 300 } }); } catch(e) {}
-      });
-      setTimeout(function() { try { if (net.fit) net.fit({ animation: { duration: 300 } }); } catch(e) {} }, 400);
-      document.getElementById('filterLabel').textContent = 'Showing: AI highlight';
-    } catch(e) { console.error(e); alert('Highlight failed: ' + (e.message || e)); }
+      nodeDS.update(nodeUpdates);
+      edgeDS.update(edgeUpdates);
+      net.redraw();
+      _aiHighlightActive = true;
+      document.getElementById('filterLabel').textContent = 'Showing: AI highlight (' + matchCount + ' nodes)';
+      var btn = document.getElementById('aiHighlightBtn');
+      if (btn) btn.textContent = 'Reset Graph';
+      var graphBox = document.getElementById('mynetwork');
+      if (graphBox) {
+        graphBox.style.position = 'relative';
+        var toast = document.createElement('div');
+        toast.className = 'hl-toast';
+        toast.textContent = 'Highlighted ' + matchCount + ' nodes';
+        graphBox.appendChild(toast);
+        setTimeout(function() { toast.style.opacity = '0'; }, 2500);
+        setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 3200);
+      }
+    } catch(e) { console.error('highlightFromAi:', e); }
+  }
+
+  function clearAiHighlight() {
+    if (!_aiHighlightActive) return;
+    var net = getNet();
+    if (!net || !net.body || !net.body.data) return;
+    var nodeDS = net.body.data.nodes;
+    var edgeDS = net.body.data.edges;
+    if (!nodeDS || !edgeDS || !window._allNodes || !window._allEdges) return;
+    var nodeRestore = window._allNodes.map(function(n) {
+      return { id: n.id, color: n.color, font: n.font, size: n.size, borderWidth: n.borderWidth, shadow: n.shadow };
+    });
+    var edgeRestore = window._allEdges.map(function(e) {
+      return { id: e.id, color: e.color, width: e.width };
+    });
+    try {
+      nodeDS.update(nodeRestore);
+      edgeDS.update(edgeRestore);
+    } catch(e) { console.error('clearAiHighlight error:', e); }
+    _aiHighlightActive = false;
+    document.getElementById('filterLabel').textContent = 'Showing: All';
+    var btn = document.getElementById('aiHighlightBtn');
+    if (btn) btn.textContent = 'Highlight in Graph';
+  }
+
+  function toggleAiHighlight() {
+    if (_aiHighlightActive) {
+      clearAiHighlight();
+    } else {
+      highlightFromAi();
+      var btn = document.getElementById('aiHighlightBtn');
+      if (btn) btn.textContent = 'Reset Graph';
+    }
   }
   /* ===== Document Upload ===== */
   var _uploadExtractedData = null;
@@ -1326,18 +2038,21 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var allN = window._allNodes || [];
     var pts = allN.filter(function(n) { return n.node_type === 'Patient'; });
     pts.sort(function(a, b) { return (a.label || '').localeCompare(b.label || ''); });
+    var preSelected = {};
+    if (_patientContext.selected) preSelected[_patientContext.selected.pid] = true;
+    _patientContext.selectedMulti.forEach(function(p) { preSelected[p.pid] = true; });
     var html = '';
     pts.forEach(function(p) {
+      var checked = preSelected[p.id_prop] ? ' checked' : '';
       html += '<label class="compare-patient-item">';
-      html += '<input type="checkbox" value="' + (p.id_prop || p.id) + '" onchange="updateCompareBtn()">';
+      html += '<input type="checkbox" value="' + (p.id_prop || p.id) + '"' + checked + ' onchange="updateCompareBtn()">';
       html += '<span class="cp-name">' + (p.label || p.id_prop || '') + '</span>';
       html += '<span class="cp-id">' + (p.id_prop || '') + '</span>';
       html += '</label>';
     });
     if (!pts.length) html = '<p class="compare-none">No patients found in the graph.</p>';
     document.getElementById('comparePatientList').innerHTML = html;
-    document.getElementById('compareRunBtn').disabled = true;
-    document.getElementById('compareRunBtn').textContent = 'Compare';
+    updateCompareBtn();
     document.getElementById('compareModal').style.display = 'flex';
   }
 
@@ -1502,6 +2217,455 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   window.runComparison = runComparison;
   window.closeComparison = closeComparison;
 
+  /* ---- Clinical Timeline ---- */
+  var _tlCharts = {};
+
+  function openTimeline(patientId) {
+    document.getElementById('timelineModal').style.display = 'flex';
+    document.getElementById('timelineTitle').textContent = 'Clinical Timeline';
+    document.getElementById('timelineInfo').textContent = 'Loading...';
+    document.getElementById('timelineEvents').innerHTML = '';
+    Object.keys(_tlCharts).forEach(function(k) { _tlCharts[k].destroy(); });
+    _tlCharts = {};
+    var apiUrl = (document.getElementById('aiApiUrl') && document.getElementById('aiApiUrl').value || 'http://localhost:8000').replace(/\\/$/, '');
+    fetch(apiUrl + '/patient-timeline/' + encodeURIComponent(patientId))
+    .then(function(r) { if (!r.ok) throw new Error('API error ' + r.status); return r.json(); })
+    .then(function(data) { renderTimeline(data); })
+    .catch(function(err) {
+      document.getElementById('timelineInfo').textContent = 'Error: ' + err.message;
+    });
+  }
+
+  function closeTimeline() {
+    document.getElementById('timelineModal').style.display = 'none';
+    Object.keys(_tlCharts).forEach(function(k) { _tlCharts[k].destroy(); });
+    _tlCharts = {};
+  }
+
+  function renderTimeline(data) {
+    var name = data.patient_name || data.patient_id;
+    var info = name + ' (' + data.patient_id + ')';
+    if (data.age) info += ' · Age ' + data.age;
+    if (data.sex) info += ' · ' + data.sex;
+    if (data.diseases && data.diseases.length) info += ' · ' + data.diseases.map(function(d) { return d.name || d.id; }).join(', ');
+    document.getElementById('timelineTitle').textContent = 'Clinical Timeline — ' + name;
+    document.getElementById('timelineInfo').textContent = info;
+    if (!data.has_clinical_state) {
+      document.getElementById('timelineInfo').textContent += ' (simulated from baseline)';
+    }
+
+    var labels = data.labels || [];
+    var v = data.vitals || {};
+
+    function trendLabel(vital, key) {
+      var t = vital.trend || 'stable';
+      var higher_is_worse = !!vital.critical_above;
+      var cls, text;
+      if (t === 'stable') { cls = 'stable'; text = 'Stable'; }
+      else if (t === 'rising') {
+        if (higher_is_worse) { cls = 'bad'; text = 'Worsening \\u2191'; }
+        else { cls = 'good'; text = 'Improving \\u2191'; }
+      } else {
+        if (higher_is_worse) { cls = 'good'; text = 'Improving \\u2193'; }
+        else { cls = 'bad'; text = 'Worsening \\u2193'; }
+      }
+      var el = document.getElementById('trend' + key);
+      if (el) { el.textContent = text; el.className = 'tl-trend ' + cls; }
+    }
+
+    trendLabel(v.sofa || {}, 'Sofa');
+    trendLabel(v.map || {}, 'Map');
+    trendLabel(v.creatinine || {}, 'Creat');
+    trendLabel(v.gcs || {}, 'Gcs');
+    trendLabel(v.lactate || {}, 'Lactate');
+
+    function makeChart(canvasId, label, values, color, critVal, critType) {
+      var ctx = document.getElementById(canvasId);
+      if (!ctx) return;
+      var datasets = [{
+        label: label, data: values, borderColor: color, backgroundColor: color + '22',
+        borderWidth: 2, pointRadius: 4, pointBackgroundColor: color, fill: true, tension: 0.3
+      }];
+      var annotations = {};
+      if (critVal != null) {
+        annotations.critLine = {
+          type: 'line', yMin: critVal, yMax: critVal, borderColor: '#ef444480',
+          borderWidth: 1.5, borderDash: [5, 3],
+          label: { content: (critType === 'above' ? '\\u2265 ' : '\\u2264 ') + critVal, enabled: true, position: 'end', font: { size: 9 }, color: '#ef4444' }
+        };
+      }
+      _tlCharts[canvasId] = new Chart(ctx, {
+        type: 'line',
+        data: { labels: labels, datasets: datasets },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          scales: { y: { beginAtZero: false, grid: { color: '#e2e8f022' }, ticks: { font: { size: 10 } } }, x: { grid: { display: false }, ticks: { font: { size: 10 } } } },
+          plugins: { legend: { display: false }, tooltip: { callbacks: { label: function(c) { return label + ': ' + c.parsed.y; } } } }
+        }
+      });
+    }
+
+    makeChart('chartSofa', 'SOFA', (v.sofa || {}).values || [], '#ef4444', 2, 'above');
+    makeChart('chartMap', 'MAP', (v.map || {}).values || [], '#3b82f6', 65, 'below');
+    makeChart('chartCreat', 'Creatinine', (v.creatinine || {}).values || [], '#f59e0b', 1.5, 'above');
+    makeChart('chartGcs', 'GCS', (v.gcs || {}).values || [], '#10b981', 13, 'below');
+    makeChart('chartLactate', 'Lactate', (v.lactate || {}).values || [], '#8b5cf6', 2.0, 'above');
+
+    var eventsHtml = '';
+    var events = data.events || [];
+    if (events.length) {
+      events.forEach(function(ev) {
+        eventsHtml += '<div class="tl-event">';
+        eventsHtml += '<span class="tl-event-dot ' + (ev.type || 'encounter') + '"></span>';
+        eventsHtml += '<span class="tl-event-date">' + (ev.date || '') + '</span>';
+        eventsHtml += '<span>' + (ev.label || '') + '</span>';
+        eventsHtml += '</div>';
+      });
+    } else {
+      eventsHtml = '<p class="tl-no-events">No clinical events recorded.</p>';
+    }
+    document.getElementById('timelineEvents').innerHTML = eventsHtml;
+  }
+
+  window.openTimeline = openTimeline;
+  window.closeTimeline = closeTimeline;
+
+  /* ===== Patient Summary Card & Insights ===== */
+  function _getConnectedByType(pid) {
+    var allN = window._allNodes || [];
+    var allE = window._allEdges || [];
+    var visId = null;
+    allN.forEach(function(n) { if (n.node_type === 'Patient' && n.id_prop === pid) visId = n.id; });
+    if (!visId) return { diseases: [], symptoms: [], violations: [], drugs: [], clinical: null, name: '', age: '', sex: '' };
+    var pNode = null;
+    allN.forEach(function(n) { if (n.id === visId) pNode = n; });
+    var connIds = {};
+    allE.forEach(function(e) {
+      if (e.from === visId) connIds[e.to] = e.label || '';
+      if (e.to === visId) connIds[e.from] = e.label || '';
+    });
+    var diseases = [], symptoms = [], violations = [], drugs = [], clinical = null;
+    allN.forEach(function(n) {
+      if (!connIds.hasOwnProperty(n.id)) return;
+      if (n.node_type === 'Disease') diseases.push(n.label || n.id_prop);
+      else if (n.node_type === 'Symptom') symptoms.push(n.label || n.id_prop);
+      else if (n.node_type === 'Violation') {
+        var sev = 'warning';
+        var t = n.title || '';
+        if (t.indexOf('critical') >= 0 || t.indexOf('Critical') >= 0) sev = 'critical';
+        else if (t.indexOf('normal') >= 0 || t.indexOf('Normal') >= 0 || t.indexOf('Compliant') >= 0) sev = 'normal';
+        violations.push({ text: n.label || n.id_prop, severity: sev, title: t });
+      }
+      else if (n.node_type === 'Drug') drugs.push(n.label || n.id_prop);
+      else if (n.node_type === 'ClinicalState') {
+        var tp = n.title || '';
+        var extract = function(key) { var m = tp.match(new RegExp(key + ':\\\\s*([\\\\d.]+)')); return m ? parseFloat(m[1]) : null; };
+        clinical = { sofa: extract('SOFA'), lactate: extract('Lactate'), map: extract('MAP'), gcs: extract('GCS'), creatinine: extract('Creatinine') };
+      }
+    });
+    var title = (pNode && pNode.title) || '';
+    var ageM = title.match(/Age:\\s*([^|<]+)/);
+    var sexM = title.match(/Sex:\\s*([^<]+)/);
+    return {
+      diseases: diseases, symptoms: symptoms, violations: violations, drugs: drugs, clinical: clinical,
+      name: (pNode && pNode.label) || pid,
+      age: ageM ? ageM[1].trim() : '',
+      sex: sexM ? sexM[1].trim() : ''
+    };
+  }
+
+  function renderPatientSummary(pid) {
+    var card = document.getElementById('patientSummaryCard');
+    var content = document.getElementById('pscContent');
+    if (!card || !content) return;
+    if (!pid) { card.classList.remove('active'); return; }
+    var d = _getConnectedByType(pid);
+    var html = '<p class="psc-name"><span class="psc-dot"></span>' + d.name + '</p>';
+    html += '<p class="psc-meta">' + pid;
+    if (d.age && d.age !== '—') html += ' &middot; Age ' + d.age;
+    if (d.sex && d.sex !== '—') html += ' &middot; ' + d.sex;
+    html += '</p>';
+    var summaryParts = [];
+    var c = d.clinical;
+    var hasSepsis = d.diseases.some(function(x) { return x.toLowerCase().indexOf('sepsis') >= 0; });
+    var hasFever = d.symptoms.some(function(x) { return x.toLowerCase().indexOf('fever') >= 0; });
+    var hasHypotension = d.symptoms.some(function(x) { return x.toLowerCase().indexOf('hypotension') >= 0; });
+    var critCount = d.violations.filter(function(v) { return v.severity === 'critical'; }).length;
+    if (hasSepsis) summaryParts.push('diagnosed with sepsis');
+    else if (d.diseases.length === 1) summaryParts.push('diagnosed with ' + d.diseases[0].toLowerCase());
+    else if (d.diseases.length > 1) summaryParts.push(d.diseases.length + ' active diagnoses');
+    if (c && c.map != null && c.map < 65) summaryParts.push('hypotensive (MAP ' + c.map + ')');
+    else if (hasHypotension) summaryParts.push('signs of hypotension');
+    if (c && c.sofa != null && c.sofa >= 8) summaryParts.push('severe organ dysfunction (SOFA ' + c.sofa + ')');
+    else if (c && c.sofa != null && c.sofa >= 2) summaryParts.push('elevated SOFA (' + c.sofa + ')');
+    if (c && c.lactate != null && c.lactate > 4) summaryParts.push('high lactate (' + c.lactate + ')');
+    if (hasFever && !hasSepsis && c && c.sofa != null && c.sofa >= 2) summaryParts.push('possible early sepsis pattern');
+    if (critCount) summaryParts.push(critCount + ' critical protocol violation' + (critCount > 1 ? 's' : ''));
+    else if (!d.violations.length && d.diseases.length) summaryParts.push('protocol-compliant');
+    var summaryText = '';
+    if (summaryParts.length) {
+      summaryText = 'Patient presents with ' + summaryParts[0];
+      if (summaryParts.length === 2) summaryText += ' and ' + summaryParts[1];
+      else if (summaryParts.length > 2) {
+        for (var si = 1; si < summaryParts.length - 1; si++) summaryText += ', ' + summaryParts[si];
+        summaryText += ', and ' + summaryParts[summaryParts.length - 1];
+      }
+      summaryText += '.';
+    } else {
+      summaryText = 'No significant clinical findings for this patient.';
+    }
+    html += '<p class="psc-clinical-summary">' + summaryText + '</p>';
+    html += '<div class="psc-section"><p class="psc-section-label">Diseases</p><div class="psc-tags">';
+    if (d.diseases.length) d.diseases.forEach(function(x) { html += '<span class="psc-tag disease">' + x + '</span>'; });
+    else html += '<span class="psc-none">None</span>';
+    html += '</div></div>';
+    html += '<div class="psc-section"><p class="psc-section-label">Symptoms</p><div class="psc-tags">';
+    if (d.symptoms.length) d.symptoms.forEach(function(x) { html += '<span class="psc-tag symptom">' + x + '</span>'; });
+    else html += '<span class="psc-none">None</span>';
+    html += '</div></div>';
+    html += '<div class="psc-section"><p class="psc-section-label">Medications</p><div class="psc-tags">';
+    if (d.drugs.length) d.drugs.forEach(function(x) { html += '<span class="psc-tag drug">' + x + '</span>'; });
+    else html += '<span class="psc-none">None</span>';
+    html += '</div></div>';
+    if (d.violations.length) {
+      html += '<div class="psc-section"><p class="psc-section-label">Violations</p><div class="psc-tags">';
+      d.violations.forEach(function(v) { html += '<span class="psc-tag violation-' + v.severity + '">' + v.text + '</span>'; });
+      html += '</div></div>';
+    }
+    if (d.clinical) {
+      html += '<div class="psc-section"><p class="psc-section-label">Vitals</p><div class="psc-tags">';
+      if (d.clinical.sofa != null) html += '<span class="psc-tag symptom">SOFA ' + d.clinical.sofa + '</span>';
+      if (d.clinical.map != null) html += '<span class="psc-tag symptom">MAP ' + d.clinical.map + '</span>';
+      if (d.clinical.lactate != null) html += '<span class="psc-tag symptom">Lactate ' + d.clinical.lactate + '</span>';
+      if (d.clinical.gcs != null) html += '<span class="psc-tag symptom">GCS ' + d.clinical.gcs + '</span>';
+      if (d.clinical.creatinine != null) html += '<span class="psc-tag symptom">Creatinine ' + d.clinical.creatinine + '</span>';
+      html += '</div></div>';
+    }
+    content.innerHTML = html;
+    card.classList.add('active');
+  }
+
+  var _insightCounter = 0;
+  function renderInsightPanel(pid) {
+    var panel = document.getElementById('insightPanel');
+    var list = document.getElementById('insightList');
+    if (!panel || !list) return;
+    if (!pid) { panel.classList.remove('active'); list.innerHTML = ''; return; }
+    var d = _getConnectedByType(pid);
+    var insights = [];
+    var c = d.clinical;
+    if (c) {
+      if (c.map != null && c.map < 65) insights.push({ icon: '\\u26a0', text: '<strong>Low MAP (' + c.map + ' mmHg)</strong> &mdash; below 65 mmHg threshold', cls: 'critical',
+        reasons: ['MAP reading is <span class="reason-val">' + c.map + ' mmHg</span>', 'Clinical threshold is 65 mmHg (Surviving Sepsis Campaign)', 'Low MAP suggests inadequate tissue perfusion', 'Consider vasopressor therapy if fluid-unresponsive'] });
+      if (c.sofa != null && c.sofa >= 8) insights.push({ icon: '\\u26a0', text: '<strong>High SOFA score (' + c.sofa + ')</strong> &mdash; significant organ dysfunction', cls: 'critical',
+        reasons: ['SOFA score is <span class="reason-val">' + c.sofa + '</span> (normal &lt; 2)', 'Score \\u2265 8 indicates multi-organ failure risk', 'Each point increase above 2 raises mortality risk'] });
+      else if (c.sofa != null && c.sofa >= 2) insights.push({ icon: '\\u25b2', text: '<strong>Elevated SOFA (' + c.sofa + ')</strong> &mdash; monitor closely', cls: '',
+        reasons: ['SOFA score is <span class="reason-val">' + c.sofa + '</span> (baseline is 0\\u20131)', 'Score \\u2265 2 indicates possible organ dysfunction', 'Trend monitoring recommended'] });
+      if (c.lactate != null && c.lactate > 4) insights.push({ icon: '\\u26a0', text: '<strong>High lactate (' + c.lactate + ' mmol/L)</strong> &mdash; tissue hypoperfusion', cls: 'critical',
+        reasons: ['Lactate is <span class="reason-val">' + c.lactate + ' mmol/L</span>', 'Level &gt; 4 mmol/L is a sepsis severity marker', 'Indicates anaerobic metabolism from poor perfusion', 'Repeat measurement in 2\\u20134 hours recommended'] });
+      else if (c.lactate != null && c.lactate > 2) insights.push({ icon: '\\u25b2', text: '<strong>Elevated lactate (' + c.lactate + ' mmol/L)</strong> &mdash; recheck recommended', cls: '',
+        reasons: ['Lactate is <span class="reason-val">' + c.lactate + ' mmol/L</span> (normal &lt; 2)', 'Intermediate elevation may indicate early perfusion deficit'] });
+      if (c.gcs != null && c.gcs < 13) insights.push({ icon: '\\u26a0', text: '<strong>Low GCS (' + c.gcs + ')</strong> &mdash; altered mental status', cls: 'critical',
+        reasons: ['GCS is <span class="reason-val">' + c.gcs + '</span> (normal 15)', 'Score &lt; 13 suggests moderate to severe impairment', 'May indicate CNS involvement or metabolic encephalopathy'] });
+      if (c.creatinine != null && c.creatinine > 2.0) insights.push({ icon: '\\u26a0', text: '<strong>Elevated creatinine (' + c.creatinine + ')</strong> &mdash; possible renal impairment', cls: 'critical',
+        reasons: ['Creatinine is <span class="reason-val">' + c.creatinine + ' mg/dL</span>', 'Level &gt; 2.0 mg/dL suggests acute kidney injury', 'May contribute to SOFA score elevation', 'Monitor urine output and consider nephrology consult'] });
+      else if (c.creatinine != null && c.creatinine > 1.2) insights.push({ icon: '\\u25b2', text: '<strong>Creatinine slightly elevated (' + c.creatinine + ')</strong>', cls: '',
+        reasons: ['Creatinine is <span class="reason-val">' + c.creatinine + ' mg/dL</span> (normal 0.6\\u20131.2)', 'Monitor for further increase'] });
+    }
+    var hasSepsis = d.diseases.some(function(x) { return x.toLowerCase().indexOf('sepsis') >= 0; });
+    var hasFever = d.symptoms.some(function(x) { return x.toLowerCase().indexOf('fever') >= 0; });
+    var hasHypotension = d.symptoms.some(function(x) { return x.toLowerCase().indexOf('hypotension') >= 0; });
+    if (hasSepsis) {
+      var sepsisReasons = ['Patient has a <span class="reason-val">sepsis</span> diagnosis'];
+      if (c && c.sofa != null) sepsisReasons.push('SOFA score: <span class="reason-val">' + c.sofa + '</span>');
+      if (c && c.lactate != null) sepsisReasons.push('Lactate: <span class="reason-val">' + c.lactate + ' mmol/L</span>');
+      if (c && c.map != null) sepsisReasons.push('MAP: <span class="reason-val">' + c.map + ' mmHg</span>');
+      sepsisReasons.push('Sepsis-3 bundle: antibiotics within 1h, blood cultures, 30 mL/kg crystalloid if hypotensive');
+      insights.push({ icon: '\\u26a0', text: '<strong>Sepsis diagnosis present</strong> &mdash; ensure bundle compliance', cls: 'critical', reasons: sepsisReasons });
+    } else if (hasFever && (c && c.sofa != null && c.sofa >= 2)) {
+      insights.push({ icon: '\\u2139', text: '<strong>Possible sepsis pattern</strong> &mdash; fever + elevated SOFA', cls: '',
+        reasons: ['Symptom: <span class="reason-val">fever</span> is present', 'SOFA score: <span class="reason-val">' + c.sofa + '</span> (\\u2265 2)', 'Combination suggests possible infection-driven organ dysfunction', 'Consider blood cultures and empiric antibiotics if clinical suspicion is high'] });
+    }
+    if (hasHypotension && (!c || c.map == null || c.map >= 65)) insights.push({ icon: '\\u2139', text: '<strong>Hypotension symptom noted</strong> &mdash; verify current MAP', cls: 'info',
+      reasons: ['Symptom: <span class="reason-val">hypotension</span> documented', c && c.map != null ? 'Current MAP reading: <span class="reason-val">' + c.map + ' mmHg</span>' : 'No current MAP reading available', 'Verify latest vitals and reassess fluid status'] });
+    var critViolations = d.violations.filter(function(v) { return v.severity === 'critical'; });
+    if (critViolations.length) {
+      var vReasons = critViolations.map(function(v) { return '<span class="reason-val">' + v.text + '</span>'; });
+      vReasons.push('Critical violations indicate missed mandatory protocol steps');
+      insights.push({ icon: '\\u26d4', text: '<strong>' + critViolations.length + ' critical violation' + (critViolations.length > 1 ? 's' : '') + '</strong> &mdash; review protocol', cls: 'critical', reasons: vReasons });
+    }
+    if (!d.violations.length && d.diseases.length) insights.push({ icon: '\\u2705', text: '<strong>No violations detected</strong> &mdash; protocol-compliant', cls: 'good',
+      reasons: ['All ' + d.diseases.length + ' disease protocol(s) checked', 'No missing treatments or procedures identified', 'Patient is following recommended clinical pathways'] });
+    if (!d.drugs.length && d.diseases.length) insights.push({ icon: '\\u2139', text: '<strong>No medications recorded</strong> &mdash; verify treatment plan', cls: 'info',
+      reasons: ['Patient has ' + d.diseases.length + ' disease(s) but no drugs in the graph', 'Medications may not have been documented', 'Review pharmacy records or treatment orders'] });
+    if (!insights.length) insights.push({ icon: '\\u2139', text: 'No notable clinical insights for this patient', cls: 'info', reasons: [] });
+    var html = '';
+    insights.forEach(function(ins, idx) {
+      var uid = 'insR' + (++_insightCounter);
+      html += '<div class="insight-item ' + ins.cls + '"><span class="insight-icon">' + ins.icon + '</span><span class="insight-text">' + ins.text;
+      if (ins.reasons && ins.reasons.length) {
+        html += '<span class="insight-why-toggle" onclick="event.stopPropagation();var r=document.getElementById(\\'' + uid + '\\');r.classList.toggle(\\'open\\');this.textContent=r.classList.contains(\\'open\\')?\\'\u25b4 Hide\\':\\'\u25be Why?\\'">\\u25be Why?</span>';
+        html += '<div class="insight-reasons" id="' + uid + '"><ul>';
+        ins.reasons.forEach(function(r) { html += '<li>' + r + '</li>'; });
+        html += '</ul></div>';
+      }
+      html += '</span></div>';
+    });
+    list.innerHTML = html;
+    panel.classList.add('active');
+  }
+
+  /* ===== Global Patient Context ===== */
+  var _patientContext = { selected: null, selectedMulti: [] };
+
+  function _getAllPatientNodes() {
+    var nodes = window._allNodes || [];
+    var pts = [];
+    nodes.forEach(function(n) {
+      if (n.node_type === 'Patient' && n.id_prop) pts.push({ pid: n.id_prop, name: n.label || n.id_prop, visId: n.id });
+    });
+    pts.sort(function(a, b) { return a.name.localeCompare(b.name); });
+    return pts;
+  }
+
+  function _buildPsList(filter) {
+    var el = document.getElementById('psList');
+    if (!el) return;
+    var pts = _getAllPatientNodes();
+    var q = (filter || '').toLowerCase();
+    el.innerHTML = '';
+    pts.forEach(function(p) {
+      if (q && p.name.toLowerCase().indexOf(q) < 0 && p.pid.toLowerCase().indexOf(q) < 0) return;
+      var div = document.createElement('div');
+      div.className = 'ps-item';
+      div.innerHTML = '<span class="ps-dot"></span><span class="ps-name">' + p.name + '</span><span class="ps-id">' + p.pid + '</span>';
+      div.onclick = function() { selectGlobalPatient(p.pid, p.name, p.visId); };
+      el.appendChild(div);
+    });
+    if (!el.children.length) el.innerHTML = '<p style="color:#94a3b8;font-size:0.8125rem;text-align:center;padding:1rem;">No patients found</p>';
+  }
+  window.filterPsPatients = function(val) { _buildPsList(val); };
+
+  function selectGlobalPatient(pid, name, visId) {
+    _patientContext.selected = { pid: pid, name: name, visId: visId };
+    _patientContext.selectedMulti = [{ pid: pid, name: name, visId: visId }];
+    dismissPatientSelector();
+    applyPatientContext();
+  }
+
+  function dismissPatientSelector() {
+    var overlay = document.getElementById('patientSelectorOverlay');
+    if (overlay) overlay.style.display = 'none';
+  }
+  window.dismissPatientSelector = dismissPatientSelector;
+
+  function changePatient() {
+    var overlay = document.getElementById('patientSelectorOverlay');
+    if (overlay) {
+      overlay.style.display = 'flex';
+      _buildPsList('');
+      var search = document.getElementById('psSearch');
+      if (search) { search.value = ''; search.focus(); }
+    }
+  }
+  window.changePatient = changePatient;
+
+  function clearGlobalPatient() {
+    _patientContext.selected = null;
+    _patientContext.selectedMulti = [];
+    applyPatientContext();
+  }
+  window.clearGlobalPatient = clearGlobalPatient;
+
+  function renderViewingBar() {
+    var bar = document.getElementById('viewingBar');
+    if (!bar) return;
+    bar.className = 'viewing-bar';
+    if (!_patientContext.selected) {
+      bar.innerHTML = '<span class="viewing-label">Viewing:</span>'
+        + '<span class="viewing-patient">All patients</span>'
+        + '<button class="viewing-change" onclick="changePatient()">Select a patient</button>';
+      return;
+    }
+    bar.innerHTML = '<span class="viewing-label">Viewing:</span>'
+      + '<span class="viewing-patient">' + _patientContext.selected.name + ' (' + _patientContext.selected.pid + ')</span>'
+      + '<button class="viewing-change" onclick="openTimeline(\\'' + _patientContext.selected.pid + '\\')" style="color:#3b82f6;text-decoration:none;font-weight:600;">View Timeline</button>'
+      + '<button class="viewing-change" onclick="clearGlobalPatient()">Show all patients</button>'
+      + '<button class="viewing-change" onclick="changePatient()">Change patient</button>';
+  }
+
+  function filterGraphToPatient() {
+    var net = getNet();
+    if (!net || !net.body || !net.body.data) return;
+    var allNodes = window._allNodes;
+    var allEdges = window._allEdges;
+    if (!allNodes || !allNodes.length) return;
+
+    if (!_patientContext.selected) {
+      net.body.data.nodes.update(allNodes);
+      net.body.data.edges.update(allEdges);
+      try {
+        var fullN = new vis.DataSet(allNodes);
+        var fullE = new vis.DataSet(allEdges);
+        net.setData({ nodes: fullN, edges: fullE });
+      } catch(e) {}
+      document.getElementById('filterLabel').textContent = 'Showing: All';
+      var es = document.getElementById('graphEmptyState');
+      if (es) es.style.display = 'none';
+      return;
+    }
+
+    var pid = _patientContext.selected.pid;
+    var nodeMap = {};
+    allNodes.forEach(function(n) { nodeMap[n.id] = n; });
+    var patientVisId = null;
+    allNodes.forEach(function(n) { if (n.node_type === 'Patient' && n.id_prop === pid) patientVisId = n.id; });
+
+    if (!patientVisId) return;
+
+    var connectedIds = {};
+    connectedIds[patientVisId] = true;
+    allEdges.forEach(function(e) {
+      if (e.from === patientVisId) connectedIds[e.to] = true;
+      if (e.to === patientVisId) connectedIds[e.from] = true;
+    });
+    var secondLevel = {};
+    allEdges.forEach(function(e) {
+      if (connectedIds[e.from] && !connectedIds[e.to]) secondLevel[e.to] = true;
+      if (connectedIds[e.to] && !connectedIds[e.from]) secondLevel[e.from] = true;
+    });
+    Object.keys(secondLevel).forEach(function(id) { connectedIds[id] = true; });
+
+    var filteredN = allNodes.filter(function(n) { return connectedIds[n.id]; });
+    var filteredE = allEdges.filter(function(e) { return connectedIds[e.from] && connectedIds[e.to]; });
+
+    try {
+      net.setData({ nodes: new vis.DataSet(filteredN), edges: new vis.DataSet(filteredE) });
+      document.getElementById('filterLabel').textContent = 'Viewing: ' + _patientContext.selected.name;
+    } catch(e) {}
+  }
+
+  function applyPatientContext() {
+    renderViewingBar();
+    filterGraphToPatient();
+    var pid = _patientContext.selected ? _patientContext.selected.pid : null;
+    renderPatientSummary(pid);
+    renderInsightPanel(pid);
+    var sp = document.getElementById('statsPanel');
+    var vp = document.getElementById('violationsPanel');
+    if (sp) sp.style.display = pid ? 'none' : '';
+    if (vp) vp.style.display = pid ? 'none' : '';
+    if (_patientContext.selected) {
+      _aiSelectedPatients = [{ pid: _patientContext.selected.pid, name: _patientContext.selected.name, visId: _patientContext.selected.visId }];
+    } else {
+      _aiSelectedPatients = [];
+    }
+    renderAiContextBar();
+    updatePatientSelectionVisuals();
+    var sel = document.getElementById('filterPatient');
+    if (sel) sel.value = _patientContext.selected ? _patientContext.selected.pid : '';
+  }
+
   document.addEventListener('DOMContentLoaded', function() {
     initDashboard();
     var dz = document.getElementById('uploadDropzone');
@@ -1518,10 +2682,17 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       var net = getNet();
       if (net) {
         net.on('click', function(params) {
-          if (params.nodes && params.nodes.length) showExplanation(params.nodes[0]);
+          if (params.nodes && params.nodes.length) {
+            var clickedId = params.nodes[0];
+            togglePatientSelection(clickedId);
+            showExplanation(clickedId);
+          }
         });
         populateFilterOptions();
-        syncPatientsFromBackend();
+        syncPatientsFromBackend(function() {
+          _buildPsList('');
+        });
+        renderAiContextBar();
       } else {
         setTimeout(attachToGraph, 100);
       }
@@ -1541,6 +2712,7 @@ def inject_dashboard_into_html(html: str, sidebar_and_script: str) -> str:
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
             '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+            '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>'
         )
         html = html.replace("<head>", "<head>\n" + font_tags, 1)
     # Extract the mynetwork div from pyvis output (card contains it)

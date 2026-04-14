@@ -550,6 +550,83 @@ def create_patient_from_document(data: dict) -> dict:
     }
 
 
+def get_patient_timeline_data(patient_id: str) -> dict:
+    """Gather clinical state, encounters, labs, treatments for timeline rendering."""
+    clinical = get_patient_clinical_state(patient_id)
+    journey = get_patient_full_journey(patient_id)
+    notes = get_patient_notes(patient_id)
+    diseases_rows = get_patients_with_diseases()
+
+    patient_name = None
+    age = None
+    sex = None
+    diseases = []
+    for r in diseases_rows:
+        if r.get("patient_id") == patient_id:
+            patient_name = patient_name or r.get("patient_name")
+            age = age or r.get("patient_age")
+            sex = sex or r.get("patient_sex")
+            if r.get("disease_id"):
+                diseases.append({"id": r["disease_id"], "name": r.get("disease_name")})
+
+    encounters = []
+    labs = []
+    drugs = []
+    procedures = []
+    seen_enc = set()
+    seen_lab = set()
+    seen_drug = set()
+    seen_proc = set()
+    for r in journey:
+        patient_name = patient_name or r.get("patient_name")
+        age = age or r.get("age")
+        sex = sex or r.get("sex")
+        eid = r.get("encounter_id")
+        if eid and eid not in seen_enc:
+            seen_enc.add(eid)
+            encounters.append({
+                "id": eid, "date": r.get("encounter_date"),
+                "type": r.get("encounter_type"), "notes": r.get("encounter_notes"),
+                "doctor": r.get("doctor_name"),
+            })
+        lid = r.get("lab_id")
+        if lid and lid not in seen_lab:
+            seen_lab.add(lid)
+            labs.append({
+                "id": lid, "name": r.get("lab_name"),
+                "value": r.get("lab_result_value"), "unit": r.get("lab_unit"),
+                "date": r.get("lab_date"),
+            })
+        did = r.get("drug_id")
+        if did and did not in seen_drug:
+            seen_drug.add(did)
+            drugs.append({
+                "id": did, "name": r.get("drug_name"),
+                "date": r.get("prescribed_on"), "dose": r.get("dose"),
+            })
+        pid = r.get("procedure_id")
+        if pid and pid not in seen_proc:
+            seen_proc.add(pid)
+            procedures.append({
+                "id": pid, "name": r.get("procedure_name"),
+                "date": r.get("procedure_date"),
+            })
+
+    return {
+        "patient_id": patient_id,
+        "patient_name": patient_name or patient_id,
+        "age": age,
+        "sex": sex,
+        "diseases": diseases,
+        "clinical_state": clinical,
+        "encounters": encounters,
+        "labs": labs,
+        "drugs": drugs,
+        "procedures": procedures,
+        "notes": notes,
+    }
+
+
 def get_patients_for_comparison(patient_ids: list[str]) -> list[dict]:
     """Fetch diseases, symptoms, violation nodes, and clinical state for specific patients."""
     cypher = """

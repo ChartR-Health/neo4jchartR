@@ -1096,6 +1096,213 @@ def ai_agent_query(question: str) -> dict[str, Any]:
     return ask_agent(question)
 
 
+# ---------------------------------------------------------------------------
+# Patient-Aware "Smart" AI  (extends ask_agent — existing logic untouched)
+# ---------------------------------------------------------------------------
+
+def _build_patient_summary(pid: str) -> dict[str, Any]:
+    """Build a rich text summary + structured data for one patient."""
+    pid = _normalize_patient_id(pid) or pid
+    ctx = get_patient_context(pid)
+    analysis = analyze_patient_protocol(pid)
+
+    clinical_state = get_patient_clinical_state(pid)
+    sepsis_info = None
+    if clinical_state is not None:
+        from sepsis_compliance import run_sepsis_guidelines
+        sepsis_info = run_sepsis_guidelines(pid)
+
+    summary_parts = [
+        f"Patient {ctx.get('patient_name') or pid} ({pid}):",
+    ]
+    if ctx.get("diseases"):
+        summary_parts.append(
+            "  Diseases: " + ", ".join(d["disease_name"] or d["disease_id"] for d in ctx["diseases"])
+        )
+    if ctx.get("actual_drugs"):
+        summary_parts.append(
+            "  Drugs received: " + ", ".join(d["name"] or d["id"] for d in ctx["actual_drugs"])
+        )
+    if ctx.get("actual_procedures"):
+        summary_parts.append(
+            "  Procedures: " + ", ".join(p["name"] or p["id"] for p in ctx["actual_procedures"])
+        )
+    if ctx.get("notes"):
+        summary_parts.append(
+            "  Clinical notes: " + " | ".join((n.get("text") or "")[:120] for n in ctx["notes"][:5])
+        )
+    if clinical_state:
+        cs = clinical_state
+        summary_parts.append(
+            f"  Clinical state: SOFA={cs.get('sofa_score')}, MAP={cs.get('map')}, "
+            f"lactate={cs.get('lactate')}, GCS={cs.get('gcs')}, creatinine={cs.get('creatinine')}, "
+            f"antibiotics={cs.get('antibiotics_active')}, vasopressors={cs.get('vasopressors_active')}, "
+            f"cultures={cs.get('cultures_ordered')}"
+        )
+    comp = analysis.get("compliance_results") or []
+    violations = []
+    for r in comp:
+        for v in r.get("violations") or []:
+            violations.append(v)
+    if sepsis_info and not sepsis_info.get("compliance"):
+        for v in sepsis_info.get("violations") or []:
+            if v not in violations:
+                violations.append(v)
+    if violations:
+        summary_parts.append("  Violations: " + "; ".join(violations))
+    else:
+        summary_parts.append("  Compliance: No violations found.")
+
+    return {
+        "pid": pid,
+        "name": ctx.get("patient_name") or pid,
+        "context": ctx,
+        "analysis": analysis,
+        "clinical_state": clinical_state,
+        "sepsis_info": sepsis_info,
+        "violations": violations,
+        "summary_text": "\n".join(summary_parts),
+    }
+
+
+def ask_agent_with_context(
+    question: str,
+    selected_patient_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Patient-aware AI: if selected_patient_ids are provided, the LLM receives
+    each patient's full Neo4j context (diseases, drugs, procedures, notes,
+    clinical state, compliance results).  For multi-patient selections the
+    prompt also asks the LLM to compare.  Falls back to the original
+    ask_agent() when no patients are selected.
+    """
+    question = (question or "").strip()
+    ids = [_normalize_patient_id(p) for p in (selected_patient_ids or []) if p]
+    ids = [p for p in ids if p]
+
+    if not ids:
+        return ask_agent(question)
+
+    summaries = [_build_patient_summary(pid) for pid in ids]
+    context_block = "\n\n".join(s["summary_text"] for s in summaries)
+
+    guidelines = get_protocol_guidelines()
+    context_block += "\n\nProtocol guidelines:\n" + json.dumps(
+        [{k: v for k, v in g.items()} for g in guidelines], indent=2, default=str
+    )
+
+    sepsis_gl = get_sepsis_guidelines()
+    if sepsis_gl:
+        context_block += "\n\nSepsis guidelines:\n" + json.dumps(sepsis_gl[:1], indent=2, default=str)
+
+    if len(ids) > 1:
+        system_prompt = (
+            "You are a clinical reasoning assistant. The user selected multiple patients "
+            "and is asking a question.  Answer using ONLY the provided patient data.  "
+            "When comparing, clearly list:\n"
+            "• Common diseases / symptoms / violations shared by the selected patients\n"
+            "• Unique findings per patient\n"
+            "• Clinical reasoning about why similarities or differences matter\n"
+            "Be structured: use bullet points and headers.  Be concise but thorough."
+        )
+    else:
+        system_prompt = (
+            "You are a clinical reasoning assistant. The user selected a patient and is "
+            "asking a question.  Answer using ONLY the provided patient data.  "
+            "Be specific to THIS patient — reference their diseases, drugs, procedures, "
+            "clinical values (SOFA, MAP, lactate), notes, and compliance status.  "
+            "Never give generic advice.  Use bullet points.  Be concise but thorough."
+        )
+
+    answer = _call_llm_smart(question, context_block, system_prompt)
+
+    all_violation = any(s["violations"] for s in summaries)
+    protocol_expected: list[str] = []
+    actual_treatment: list[str] = []
+    highlight_nodes: list[str] = []
+    highlight_relationships: list[str] = []
+    paths: list[dict] = []
+
+    for s in summaries:
+        pid = s["pid"]
+        highlight_nodes.append(f"Patient:{pid}")
+        analysis = s["analysis"]
+        for r in analysis.get("compliance_results") or []:
+            if r.get("disease_id"):
+                highlight_nodes.append(f"Disease:{r['disease_id']}")
+                highlight_relationships.append("HAS_DISEASE")
+            if r.get("recommended_drug_name"):
+                protocol_expected.append(r["recommended_drug_name"])
+            if r.get("recommended_procedure_name"):
+                protocol_expected.append(r["recommended_procedure_name"])
+            actual_treatment.extend(r.get("actual_drug_names") or [])
+            actual_treatment.extend(r.get("actual_procedure_names") or [])
+            for did in r.get("actual_drug_ids") or []:
+                highlight_nodes.append(f"Drug:{did}")
+                highlight_relationships.append("TREATED_WITH")
+            for pid2 in r.get("actual_procedure_ids") or []:
+                highlight_nodes.append(f"Procedure:{pid2}")
+                highlight_relationships.append("HAD_PROCEDURE")
+        if s["clinical_state"]:
+            highlight_relationships.append("HAS_CLINICAL_STATE")
+        if s["violations"]:
+            highlight_relationships.append("HAS_VIOLATION")
+        for p in _build_path_from_patient_analysis(analysis):
+            paths.append(p)
+
+    highlight_nodes = list(dict.fromkeys(highlight_nodes))
+    highlight_relationships = list(dict.fromkeys(highlight_relationships))
+    protocol_expected = list(dict.fromkeys(x for x in protocol_expected if x))
+    actual_treatment = list(dict.fromkeys(x for x in actual_treatment if x))
+
+    pids_str = ", ".join(f"'{p}'" for p in ids)
+    highlight_query = (
+        f"MATCH (p:Patient) WHERE p.id IN [{pids_str}]"
+        " OPTIONAL MATCH (p)-[:HAS_DISEASE]->(d:Disease)"
+        " OPTIONAL MATCH (p)-[:TREATED_WITH]->(drug:Drug)"
+        " OPTIONAL MATCH (p)-[:HAD_PROCEDURE]->(proc:Procedure)"
+        " OPTIONAL MATCH (p)-[:HAS_CLINICAL_STATE]->(c:ClinicalState)"
+        " OPTIONAL MATCH (p)-[:HAS_VIOLATION]->(v:Violation)"
+        " RETURN p, d, drug, proc, c, v"
+    )
+
+    return {
+        "answer": answer,
+        "violation": all_violation,
+        "protocol_expected": protocol_expected,
+        "actual_treatment": actual_treatment,
+        "highlight_nodes": highlight_nodes,
+        "highlight_relationships": highlight_relationships,
+        "highlight_query": highlight_query,
+        "paths": paths,
+        "selected_patients": [{"pid": s["pid"], "name": s["name"]} for s in summaries],
+    }
+
+
+def _call_llm_smart(question: str, context: str, system_prompt: str) -> str:
+    """Call OpenAI with a custom system prompt for patient-aware answers."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return (
+            "No OPENAI_API_KEY set. Here is the retrieved patient context:\n\n"
+            + (context[:2000] or "No context.")
+        )
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Patient data:\n{context}\n\nQuestion: {question}"},
+            ],
+            max_tokens=1200,
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception as e:
+        return f"LLM error: {e}. Context summary:\n{context[:1000]}"
+
+
 if __name__ == "__main__":
     import sys
     q = sys.argv[1] if len(sys.argv) > 1 else "Did patient P1 follow the diabetes treatment protocol?"

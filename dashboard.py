@@ -49,6 +49,69 @@ EDGE_COLOR_COMPLIANT = "#10b981"
 EDGE_COLOR_DEFAULT = "#94a3b8"
 TREATMENT_REL_TYPES = {"HAS_DISEASE", "TREATED_WITH", "HAD_PROCEDURE", "RECOMMENDED_DRUG", "RECOMMENDED_PROCEDURE", "FOLLOW_UP"}
 
+# Visualization-only: node sizing / borders for clinical readability (does not affect Neo4j).
+NODE_SIZE_BY_TYPE = {
+    "Patient": 30,
+    "Doctor": 26,
+    "Disease": 24,
+    "Drug": 23,
+    "Symptom": 22,
+    "ClinicalState": 23,
+    "Violation": 23,
+    "Hospital": 22,
+    "Appointment": 21,
+    "Procedure": 22,
+    "FollowUp": 21,
+    "SepsisGuideline": 21,
+    "RecommendedAction": 21,
+    "LabCheck": 21,
+}
+NODE_BORDER_BY_TYPE = {
+    "Patient": "#1e40af",
+    "Doctor": "#047857",
+    "Disease": "#991b1b",
+    "Drug": "#a16207",
+    "Symptom": "#be185d",
+    "ClinicalState": "#c2410c",
+    "Violation": "#7f1d1d",
+    "Hospital": "#5b21b6",
+    "Appointment": "#b45309",
+    "Procedure": "#0e7490",
+    "FollowUp": "#475569",
+    "SepsisGuideline": "#6b21a8",
+    "RecommendedAction": "#0f766e",
+    "LabCheck": "#0369a1",
+}
+
+# Semi-transparent edge colors by relationship type (direction arrows remain visible).
+EDGE_REL_RGBA = {
+    "HAS_DISEASE": "rgba(239,68,68,0.58)",
+    "HAS_SYMPTOM": "rgba(244,114,182,0.58)",
+    "HAS_VIOLATION": "rgba(220,38,38,0.62)",
+    "HAS_CLINICAL_STATE": "rgba(249,115,22,0.56)",
+    "HAS_NOTE": "rgba(14,165,233,0.52)",
+    "TREATS": "rgba(16,185,129,0.52)",
+    "VISITS": "rgba(16,185,129,0.48)",
+    "TREATED_WITH": "rgba(234,179,8,0.58)",
+    "RECOMMENDED_DRUG": "rgba(234,179,8,0.56)",
+    "RECOMMENDED_PROCEDURE": "rgba(6,182,212,0.54)",
+    "HAD_PROCEDURE": "rgba(6,182,212,0.54)",
+    "FOLLOW_UP": "rgba(100,116,139,0.52)",
+    "HAS_APPOINTMENT": "rgba(245,158,11,0.52)",
+    "AT_HOSPITAL": "rgba(139,92,246,0.48)",
+}
+
+
+def _short_display_label(name: str, node_type: str, *, patient_max: int = 26, other_max: int = 20) -> str:
+    """Truncate long labels on the canvas; full text remains in tooltip (title)."""
+    n = (name or "").strip()
+    if not n:
+        return ""
+    lim = patient_max if node_type == "Patient" else other_max
+    if len(n) <= lim:
+        return n
+    return n[: max(1, lim - 1)] + "…"
+
 NODE_TYPES_LIST = ["Patient", "Doctor", "Disease", "Hospital", "Appointment", "Drug", "Procedure", "FollowUp", "ClinicalState", "Violation", "Symptom"]
 EDGE_TYPES_LIST = [
     "HAS_DISEASE", "TREATS", "VISITS", "HAS_APPOINTMENT", "AT_HOSPITAL",
@@ -217,23 +280,51 @@ def build_dashboard_graph():
     net = Network(height="100%", width="100%", bgcolor="#ffffff", font_color="#334155", directed=True)
     net.set_options("""{
       "nodes": {
-        "font": { "size": 14, "face": "Inter, system-ui, sans-serif", "color": "#334155" },
-        "size": 22, "borderWidth": 2,
-        "shadow": { "enabled": true, "size": 8, "x": 0, "y": 2, "color": "rgba(0,0,0,0.08)" }
+        "font": {
+          "size": 14,
+          "face": "Inter, system-ui, sans-serif",
+          "color": "#1e293b",
+          "strokeWidth": 2,
+          "strokeColor": "rgba(255,255,255,0.92)"
+        },
+        "borderWidth": 2,
+        "scaling": { "label": { "enabled": true, "min": 11, "max": 20 } },
+        "shadow": { "enabled": true, "size": 12, "x": 0, "y": 3, "color": "rgba(15,23,42,0.07)" }
       },
       "edges": {
-        "font": { "size": 11, "face": "Inter, system-ui, sans-serif", "color": "#94a3b8", "strokeWidth": 0 },
-        "width": 1.5, "arrows": { "to": { "scaleFactor": 0.5 } },
-        "smooth": { "type": "cubicBezier", "roundness": 0.4 }
+        "font": { "size": 9, "face": "Inter, system-ui, sans-serif", "color": "#64748b", "strokeWidth": 0, "align": "middle" },
+        "width": 1.35,
+        "selectionWidth": 2,
+        "arrows": { "to": { "enabled": true, "scaleFactor": 0.78 } },
+        "smooth": { "type": "cubicBezier", "forceDirection": "none", "roundness": 0.52 }
       },
       "physics": {
         "enabled": true,
-        "solver": "repulsion",
-        "repulsion": { "nodeDistance": 250, "centralGravity": 0.02, "springLength": 200, "springConstant": 0.04 },
-        "stabilization": { "enabled": true, "iterations": 200 }
+        "solver": "forceAtlas2Based",
+        "forceAtlas2Based": {
+          "theta": 0.55,
+          "gravitationalConstant": -92,
+          "centralGravity": 0.011,
+          "springLength": 268,
+          "springConstant": 0.058,
+          "damping": 0.52,
+          "avoidOverlap": 0.82
+        },
+        "maxVelocity": 42,
+        "minVelocity": 2,
+        "timestep": 0.52,
+        "stabilization": { "enabled": true, "iterations": 280, "updateInterval": 25 }
       },
       "layout": { "improvedLayout": true },
-      "interaction": { "dragNodes": true, "zoomView": true, "dragView": true, "hover": true, "tooltipDelay": 200 }
+      "interaction": {
+        "dragNodes": true,
+        "zoomView": true,
+        "dragView": true,
+        "hover": true,
+        "tooltipDelay": 160,
+        "hideEdgesOnDrag": false,
+        "hideEdgesOnZoom": false
+      }
     }""")
 
     def node_color(label):
@@ -241,54 +332,82 @@ def build_dashboard_graph():
 
     for nid, data in nodes_dict.items():
         label = data["label"]
-        name = data["name"]
+        raw_name = str(data["name"])
         id_prop = data.get("id_prop") or ""
         node_color_override = None
         if label == "Patient":
             age = data["props"].get("age")
             sex = data["props"].get("sex")
             diseases = data.get("patient_diseases") or []
-            title = f"<b>Patient: {name}</b><br>Age: {age or '—'} | Sex: {sex or '—'}<br>Diseases: {', '.join(diseases) or '—'}"
+            title = f"<b>Patient: {raw_name}</b><br>Age: {age or '—'} | Sex: {sex or '—'}<br>Diseases: {', '.join(diseases) or '—'}"
+            full_label = raw_name
         elif label == "Doctor":
             spec = data["props"].get("specialty")
             score_data = data.get("doctor_score")
             score = f"{score_data['compliance_score']}%" if score_data else "—"
-            title = f"<b>Doctor: {name}</b><br>Specialty: {spec or '—'}<br>Compliance score: {score}"
+            title = f"<b>Doctor: {raw_name}</b><br>Specialty: {spec or '—'}<br>Compliance score: {score}"
+            full_label = raw_name
         elif label == "ClinicalState":
             p = data["props"]
-            title = (f"<b>Clinical state: {name}</b><br>SOFA: {p.get('sofa_score') or '—'} | "
+            title = (f"<b>Clinical state: {raw_name}</b><br>SOFA: {p.get('sofa_score') or '—'} | "
                      f"Lactate: {p.get('lactate') or '—'} mmol/L | MAP: {p.get('map') or '—'} mmHg<br>"
                      f"GCS: {p.get('gcs') or '—'} | Creatinine: {p.get('creatinine') or '—'} mg/dL<br>"
                      f"Antibiotics: {p.get('antibiotics_active')} | Cultures: {p.get('cultures_ordered')} | Vasopressors: {p.get('vasopressors_active')}")
+            full_label = raw_name
         elif label == "SepsisGuideline":
             p = data["props"]
-            title = f"<b>Sepsis guideline: {name}</b><br>{p.get('description') or '—'}<br>SOFA≥{p.get('sofa_threshold_high')} | Lactate>{p.get('lactate_threshold_mmol')} | MAP<{p.get('map_threshold_mmhg')}"
+            title = f"<b>Sepsis guideline: {raw_name}</b><br>{p.get('description') or '—'}<br>SOFA≥{p.get('sofa_threshold_high')} | Lactate>{p.get('lactate_threshold_mmol')} | MAP<{p.get('map_threshold_mmhg')}"
+            full_label = raw_name
         elif label == "Violation":
             props = data["props"] or {}
-            desc = props.get("description") or name
+            desc = props.get("description") or raw_name
             severity = (props.get("severity") or "warning").lower()
             reason = props.get("reason") or ""
-            name = (desc[:80] + "…") if len(desc) > 80 else desc
             sev_label = severity.upper()
             title = (f"<b>Violation — <span style='color:{VIOLATION_SEVERITY_COLORS.get(severity, '#f59e0b')}'>"
                      f"{sev_label}</span></b><br>{desc}")
             if reason:
                 title += f"<br><br><b>Reason:</b> {reason}"
             node_color_override = VIOLATION_SEVERITY_COLORS.get(severity, "#f59e0b")
+            full_label = desc
         else:
-            title = f"<b>{label}: {name}</b>"
+            title = f"<b>{label}: {raw_name}</b>"
             if data["props"].get("icd10"):
                 title += f"<br>ICD-10: {data['props']['icd10']}"
-        color = node_color_override if label == "Violation" and node_color_override else node_color(label)
+            full_label = raw_name
+
+        bg = node_color_override if label == "Violation" and node_color_override else node_color(label)
+        border = NODE_BORDER_BY_TYPE.get(label, "#475569")
+        size = NODE_SIZE_BY_TYPE.get(label, 22)
+        if label == "Violation":
+            canvas_label = _short_display_label(full_label, "Violation", other_max=16)
+        else:
+            canvas_label = _short_display_label(raw_name, label)
+        font_size = 17 if label == "Patient" else (15 if label in ("Doctor", "Disease") else 13)
         net.add_node(
             nid,
-            label=name,
-            color=color,
+            label=canvas_label,
             title=title,
             id_prop=id_prop,
             node_type=label,
+            full_label=full_label,
+            short_label=canvas_label,
+            size=size,
+            borderWidth=2,
+            color={
+                "background": bg,
+                "border": border,
+                "highlight": {"background": bg, "border": "#0f172a"},
+                "hover": {"background": bg, "border": "#0f172a"},
+            },
+            font={
+                "size": font_size,
+                "face": "Inter, system-ui, sans-serif",
+                "color": "#0f172a",
+                "strokeWidth": 2,
+                "strokeColor": "rgba(255,255,255,0.9)",
+            },
         )
-        node_color_override = None
 
     keep_ids = set(nodes_dict.keys())
     for r in rows:
@@ -300,19 +419,35 @@ def build_dashboard_graph():
         tgt_id_prop = (nodes_dict.get(tgt) or {}).get("id_prop")
         key = (src_id_prop, tgt_id_prop, rel_type)
         is_violation = key in violation_edges
+        sn = str((nodes_dict.get(src) or {}).get("name") or "")
+        tn = str((nodes_dict.get(tgt) or {}).get("name") or "")
         if is_violation:
-            color = EDGE_COLOR_VIOLATION
-            title = violation_tooltips.get(key, rel_type + " (VIOLATION)")
-            # Slightly thicker so violations stand out
-            net.add_edge(src, tgt, label=rel_type, color=color, title=title, width=2.5)
+            vt = violation_tooltips.get(key, rel_type + " (VIOLATION)")
+            title = f"<b>{rel_type}</b> — violation<br><b>{sn}</b> → <b>{tn}</b><br>{vt}"
+            net.add_edge(
+                src,
+                tgt,
+                label=rel_type,
+                title=title,
+                rel_type=rel_type,
+                width=2.6,
+                color={"color": EDGE_COLOR_VIOLATION, "highlight": "#991b1b"},
+            )
             continue
-        elif rel_type in TREATMENT_REL_TYPES:
-            color = EDGE_COLOR_COMPLIANT
-            title = f"{rel_type} (compliant)"
-        else:
-            color = EDGE_COLOR_DEFAULT
-            title = rel_type
-        net.add_edge(src, tgt, label=rel_type, color=color, title=title)
+        rgba = EDGE_REL_RGBA.get(rel_type, "rgba(148,163,184,0.42)")
+        width = 1.75 if rel_type in ("HAS_DISEASE", "HAS_SYMPTOM", "TREATS", "RECOMMENDED_DRUG") else 1.4
+        title = f"<b>{rel_type}</b><br>{sn} → {tn}"
+        if rel_type in TREATMENT_REL_TYPES:
+            title += "<br><small style='color:#059669'>Compliant pathway</small>"
+        net.add_edge(
+            src,
+            tgt,
+            label=rel_type,
+            title=title,
+            rel_type=rel_type,
+            width=width,
+            color={"color": rgba, "highlight": "#334155"},
+        )
 
     # Stats and violations list for sidebar
     patients_with_diseases = get_patients_with_diseases()
@@ -387,7 +522,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
 
   /* ===== AI RESULT BANNER ===== */
   .ai-result-banner { background: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 0.75rem 1.5rem;
-    flex-shrink: 0; animation: slideDown 0.3s ease; max-height: 260px; overflow-y: auto; }
+    flex-shrink: 0; animation: slideDown 0.3s ease; max-height: min(42vh, 380px); overflow-y: auto; }
   @keyframes slideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
   .ai-result-inner { max-width: 900px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.75rem; }
   .ai-result-inner .answer { flex: 1; min-width: 200px; font-size: 0.8125rem; color: #334155; line-height: 1.6; }
@@ -403,7 +538,15 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   .ai-result-inner .ai-new-question-btn { background: #3b82f6; margin-left: 0.5rem; }
   .ai-result-inner .ai-new-question-btn:hover { background: #2563eb; }
   .ai-result-actions { display: flex; gap: 0.5rem; align-items: center; width: 100%; margin-top: 0.25rem; }
-  .ai-structured { width: 100%; }
+  .ai-structured { width: 100%; display: flex; flex-direction: column; gap: 0.5rem; }
+  .ai-clinical-response .ai-response-card {
+    background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 0.625rem 0.75rem;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); }
+  .ai-clinical-response .ai-response-card > .ai-section-label { margin-bottom: 0.35rem; }
+  .ai-clinical-response .ai-conclusion { margin-bottom: 0; }
+  .ai-insufficient-card { background: linear-gradient(180deg, #fffbeb 0%, #fff 100%); border-color: #fde68a; }
+  .ai-insufficient-title { font-size: 0.8125rem; font-weight: 700; color: #92400e; line-height: 1.45; margin: 0 0 0.35rem; }
+  .ai-insufficient-detail { font-size: 0.6875rem; color: #b45309; line-height: 1.5; margin: 0; opacity: 0.95; }
   .ai-confidence { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.15rem 0.6rem;
     border-radius: 100px; font-size: 0.625rem; font-weight: 700; letter-spacing: 0.03em;
     text-transform: uppercase; flex-shrink: 0; vertical-align: middle; margin-left: 0.5rem; }
@@ -414,10 +557,9 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   .ai-confidence.high .conf-dot { background: #16a34a; }
   .ai-confidence.medium .conf-dot { background: #f59e0b; }
   .ai-confidence.low .conf-dot { background: #dc2626; }
-  .ai-section { margin-bottom: 0.5rem; }
-  .ai-section:last-child { margin-bottom: 0; }
+  .ai-section { margin-bottom: 0; }
   .ai-section-label { font-size: 0.625rem; font-weight: 700; color: #64748b; text-transform: uppercase;
-    letter-spacing: 0.05em; margin: 0 0 0.2rem; display: flex; align-items: center; gap: 0.375rem; }
+    letter-spacing: 0.05em; margin: 0 0 0.2rem; display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
   .ai-section-label .section-icon { font-size: 0.75rem; }
   .ai-conclusion { font-size: 0.8125rem; font-weight: 600; color: #0f172a; line-height: 1.55;
     padding: 0.5rem 0.625rem; background: #f0f9ff; border-left: 3px solid #3b82f6;
@@ -429,13 +571,17 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     width: 5px; height: 5px; border-radius: 50%; background: #3b82f6; }
   .ai-explanation { font-size: 0.75rem; color: #475569; line-height: 1.55; white-space: pre-wrap; }
   .ai-insufficient { padding: 0.625rem 0.75rem; background: #fffbeb; border: 1px solid #fde68a;
-    border-radius: 8px; font-size: 0.8125rem; color: #92400e; line-height: 1.5; text-align: center; }
+    border-radius: 8px; font-size: 0.8125rem; color: #92400e; line-height: 1.5; text-align: left; }
   .ai-comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  @media (max-width: 560px) {
+    .ai-comparison-grid { grid-template-columns: 1fr; }
+  }
   .ai-comparison-col { padding: 0.5rem 0.625rem; border-radius: 8px; font-size: 0.75rem; line-height: 1.5; }
   .ai-comparison-col.common { background: #f0fdf4; border: 1px solid #bbf7d0; }
   .ai-comparison-col.diff { background: #fef2f2; border: 1px solid #fecaca; }
   .ai-comparison-col h6 { font-size: 0.625rem; font-weight: 700; color: #64748b; text-transform: uppercase;
     letter-spacing: 0.04em; margin: 0 0 0.25rem; }
+  .ai-placeholder { font-size: 0.6875rem; color: #94a3b8; font-style: italic; line-height: 1.45; display: block; }
   .hl-toast { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 999;
     background: #1e40af; color: #fff; padding: 8px 20px; border-radius: 8px; font-size: 13px; font-weight: 600;
     box-shadow: 0 4px 16px rgba(30,64,175,0.3); pointer-events: none; transition: opacity 0.5s; }
@@ -456,10 +602,14 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     transition: border-color 0.15s; }
   .ps-search:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
   .ps-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.25rem; }
+  .ps-group-label { font-size: 0.625rem; font-weight: 700; color: #94a3b8; text-transform: uppercase;
+    letter-spacing: 0.04em; padding: 0.45rem 0.5rem 0.15rem; }
+  .compare-patient-list .ps-group-label { padding-left: 0.25rem; }
   .ps-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; border-radius: 10px;
     cursor: pointer; transition: all 0.12s; border: 1.5px solid transparent; }
   .ps-item:hover { background: #eff6ff; border-color: #bfdbfe; }
   .ps-item .ps-dot { width: 10px; height: 10px; border-radius: 50%; background: #3b82f6; flex-shrink: 0; }
+  .ps-item.mimic-sample .ps-dot { background: #a855f7; }
   .ps-item .ps-name { font-weight: 600; color: #0f172a; font-size: 0.875rem; }
   .ps-item .ps-id { color: #94a3b8; font-size: 0.75rem; margin-left: auto; }
   .ps-footer { padding: 0 2rem 1.5rem; display: flex; justify-content: center; }
@@ -723,6 +873,83 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   .compare-section .tag.violation { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
   .compare-none { color: #94a3b8; font-size: 0.75rem; font-style: italic; margin: 0; }
 
+  /* Benchmark Results */
+  .filter-bar button.benchmark-btn { padding: 0.3rem 0.75rem; border: none; border-radius: 6px; background: #0ea5e9;
+    color: #fff; font-size: 0.75rem; font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: inherit; white-space: nowrap; }
+  .filter-bar button.benchmark-btn:hover { background: #0284c7; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(14,165,233,0.35); }
+  .filter-bar button.benchmark-btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
+  .benchmark-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15,23,42,0.55);
+    z-index: 1050; display: none; align-items: center; justify-content: center; animation: fadeIn 0.2s ease; padding: 1rem; }
+  .benchmark-modal.open { display: flex; }
+  .benchmark-panel { background: #fff; border-radius: 16px; width: 960px; max-width: 100%; max-height: 92vh;
+    display: flex; flex-direction: column; box-shadow: 0 24px 80px rgba(0,0,0,0.18); overflow: hidden; border: 1px solid #e2e8f0; }
+  .benchmark-panel-header { padding: 1rem 1.25rem; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; background: linear-gradient(180deg, #f8fafc 0%, #fff 100%); }
+  .benchmark-panel-header h3 { font-size: 1rem; font-weight: 700; color: #0f172a; margin: 0; letter-spacing: -0.02em; }
+  .benchmark-panel-header .benchmark-sub { font-size: 0.6875rem; color: #64748b; margin: 0.25rem 0 0; }
+  .benchmark-panel-body { padding: 1rem 1.25rem 1.25rem; overflow-y: auto; flex: 1; min-height: 0; }
+  .benchmark-loading { display: none; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 3rem 2rem; color: #64748b; font-size: 0.875rem; }
+  .benchmark-loading.visible { display: flex; }
+  .benchmark-loading .loading-spinner { width: 28px; height: 28px; border-width: 3px; }
+  .benchmark-content { display: none; }
+  .benchmark-content.visible { display: block; }
+  .benchmark-hero { display: flex; flex-wrap: wrap; align-items: stretch; gap: 1rem; margin-bottom: 1rem; }
+  .benchmark-score-block { flex: 1; min-width: 200px; background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 100%);
+    border: 1px solid #bfdbfe; border-radius: 12px; padding: 1rem 1.25rem; display: flex; align-items: center; gap: 1.25rem; }
+  .benchmark-score-num { font-size: 2.75rem; font-weight: 800; color: #1e40af; line-height: 1; letter-spacing: -0.03em; }
+  .benchmark-score-num span { font-size: 1rem; font-weight: 600; color: #64748b; vertical-align: super; margin-left: 0.125rem; }
+  .benchmark-score-meta { flex: 1; }
+  .benchmark-score-meta .label { font-size: 0.625rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.35rem; }
+  .benchmark-status-pill { display: inline-flex; align-items: center; padding: 0.35rem 0.85rem; border-radius: 100px; font-size: 0.75rem; font-weight: 700;
+    letter-spacing: 0.02em; }
+  .benchmark-status-pill.good { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+  .benchmark-status-pill.moderate { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+  .benchmark-status-pill.needs_improvement { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+  .benchmark-run-meta { font-size: 0.6875rem; color: #94a3b8; margin-top: 0.35rem; }
+  .benchmark-metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.625rem; margin-bottom: 1rem; }
+  .benchmark-metric-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 0.75rem 0.875rem;
+    box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+  .benchmark-metric-card .bm-label { font-size: 0.6875rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem; line-height: 1.35; }
+  .benchmark-metric-card .bm-value { font-size: 1.375rem; font-weight: 700; color: #0f172a; }
+  .benchmark-metric-card .bm-bar { height: 6px; background: #f1f5f9; border-radius: 100px; margin-top: 0.5rem; overflow: hidden; }
+  .benchmark-metric-card .bm-bar > i { display: block; height: 100%; border-radius: 100px; background: linear-gradient(90deg, #3b82f6, #0ea5e9); }
+  .benchmark-charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+  @media (max-width: 720px) { .benchmark-charts-row { grid-template-columns: 1fr; } }
+  .benchmark-chart-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 0.75rem 0.75rem 0.5rem; }
+  .benchmark-chart-card h4 { font-size: 0.6875rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 0.5rem; }
+  .benchmark-chart-card canvas { max-height: 220px !important; }
+  .benchmark-experiment-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+  @media (max-width: 900px) { .benchmark-experiment-row { grid-template-columns: 1fr; } }
+  .benchmark-exp-note { font-size: 0.625rem; color: #64748b; line-height: 1.45; margin: 0 0 0.5rem; }
+  .benchmark-interpretation { font-size: 0.6875rem; color: #334155; line-height: 1.5; margin: 0 0 1rem; padding: 0.6rem 0.75rem; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; }
+  .benchmark-table-wrap { border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background: #fff; }
+  .benchmark-table-wrap h4 { font-size: 0.6875rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 0.625rem 0.875rem; margin: 0; background: #f8fafc; border-bottom: 1px solid #e2e8f0; }
+  .benchmark-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+  .benchmark-table th { text-align: left; padding: 0.5rem 0.75rem; background: #f1f5f9; color: #475569; font-weight: 600; border-bottom: 1px solid #e2e8f0; }
+  .benchmark-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #f1f5f9; color: #334155; vertical-align: top; line-height: 1.45; }
+  .benchmark-table tr:last-child td { border-bottom: none; }
+  .benchmark-table .tc-score { font-weight: 700; color: #1e40af; white-space: nowrap; }
+  .benchmark-table .mono { font-family: ui-monospace, monospace; font-size: 0.6875rem; color: #475569; }
+  .benchmark-note { font-size: 0.6875rem; color: #94a3b8; margin-top: 0.75rem; padding: 0.5rem 0.75rem; background: #f8fafc; border-radius: 8px; border: 1px dashed #e2e8f0; }
+  .benchmark-gi-details { margin: 0.75rem 0 0.5rem; border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; font-size: 0.75rem; }
+  .benchmark-gi-details > summary { padding: 0.5rem 0.75rem; cursor: pointer; font-weight: 600; color: #0f172a; list-style: none; }
+  .benchmark-gi-details > summary::-webkit-details-marker { display: none; }
+  .benchmark-gi-details[open] > summary { border-bottom: 1px solid #e2e8f0; }
+  .benchmark-gi-body { padding: 0.75rem; color: #475569; line-height: 1.5; }
+  .benchmark-gi-body table { width: 100%; font-size: 0.6875rem; border-collapse: collapse; }
+  .benchmark-gi-body th, .benchmark-gi-body td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #f1f5f9; }
+  .benchmark-gi-body th { color: #64748b; font-weight: 600; }
+  .benchmark-compare-bar { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0 0.75rem; font-size: 0.75rem; color: #475569; }
+  .benchmark-compare-bar input { accent-color: #0ea5e9; width: 16px; height: 16px; cursor: pointer; }
+  .benchmark-compare-strip { display: none; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem; align-items: stretch; }
+  .benchmark-compare-strip.visible { display: flex; }
+  .bc-item { flex: 1; min-width: 160px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 0.5rem 0.75rem; }
+  .bc-item.bc-muted { background: #fff7ed; border-color: #fed7aa; }
+  .bc-item.bc-delta { background: #ecfdf5; border-color: #a7f3d0; }
+  .benchmark-compare-disclaimer { flex: 1 1 100%; margin: 0; padding: 0.5rem 0 0; font-size: 0.625rem; color: #64748b; line-height: 1.45; border-top: 1px solid #e2e8f0; white-space: pre-line; }
+  .bc-lab { display: block; font-size: 0.625rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.25rem; }
+  .bc-val { font-size: 1.25rem; font-weight: 800; color: #1e40af; }
+
   /* Patient-Aware AI context chips */
   .ai-context-bar { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; padding: 0.35rem 0; font-size: 0.6875rem; min-height: 0; }
   .ai-context-bar:empty { display: none; }
@@ -904,6 +1131,100 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     </div>
   </div>
 </div>
+<div id="benchmarkModal" class="benchmark-modal" onclick="if(event.target===this)closeBenchmarkModal()" aria-hidden="true">
+  <div class="benchmark-panel" onclick="event.stopPropagation()">
+    <div class="benchmark-panel-header">
+      <div>
+        <h3>Benchmark Results</h3>
+        <p class="benchmark-sub">Evaluation summary &mdash; clinical AI and graph-grounding performance</p>
+      </div>
+      <button type="button" class="upload-panel-close" onclick="closeBenchmarkModal()" aria-label="Close">&times;</button>
+    </div>
+    <div class="benchmark-panel-body">
+      <div id="benchmarkLoading" class="benchmark-loading">
+        <div class="loading-spinner"></div>
+        <span>Running benchmark suite&hellip;</span>
+      </div>
+      <div id="benchmarkContent" class="benchmark-content">
+        <div class="benchmark-hero">
+          <div class="benchmark-score-block">
+            <div class="benchmark-score-num" id="benchmarkOverallNum">&mdash;<span>/100</span></div>
+            <div class="benchmark-score-meta">
+              <div class="label">Overall score</div>
+              <span id="benchmarkStatusPill" class="benchmark-status-pill moderate">Moderate</span>
+              <p class="benchmark-run-meta" id="benchmarkRunMeta"></p>
+            </div>
+          </div>
+        </div>
+        <div class="benchmark-metrics-grid" id="benchmarkMetricsGrid"></div>
+        <details class="benchmark-gi-details" id="benchmarkGIDetails">
+          <summary>Graph Impact — detailed breakdown</summary>
+          <div id="benchmarkGIBreakdownBody" class="benchmark-gi-body"></div>
+        </details>
+        <div class="benchmark-compare-bar">
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin:0;">
+            <input type="checkbox" id="benchmarkCompareGraphToggle" />
+            <span>Show graph-augmented vs. simulated baseline (see disclaimer)</span>
+          </label>
+        </div>
+        <div class="benchmark-compare-strip" id="benchmarkGraphCompareRow">
+          <div class="bc-item">
+            <span class="bc-lab">Graph-augmented (measured)</span>
+            <span class="bc-val" id="bcWithG">&mdash;</span>
+          </div>
+          <div class="bc-item bc-muted">
+            <span class="bc-lab" id="bcBaselineLab">LLM Baseline (heuristic simulation, not rerun model)</span>
+            <span class="bc-val" id="bcWithoutG">&mdash;</span>
+          </div>
+          <div class="bc-item bc-delta">
+            <span class="bc-lab">Graph Influence Delta (non-causal estimate)</span>
+            <span class="bc-val" id="bcDeltaG">&mdash;</span>
+          </div>
+          <p class="benchmark-compare-disclaimer" id="benchmarkCompareDisclaimer"></p>
+        </div>
+        <div class="benchmark-charts-row">
+          <div class="benchmark-chart-card">
+            <h4>Metric profile (radar)</h4>
+            <canvas id="benchmarkRadarCanvas" height="220"></canvas>
+          </div>
+          <div class="benchmark-chart-card">
+            <h4>Scores by dimension (bar)</h4>
+            <canvas id="benchmarkBarCanvas" height="220"></canvas>
+          </div>
+        </div>
+        <div class="benchmark-experiment-row" id="benchmarkExperimentSection" style="display:none;">
+          <div class="benchmark-chart-card">
+            <h4>Paired experiment: With Graph vs Without Graph</h4>
+            <p class="benchmark-exp-note" id="benchmarkExperimentNote"></p>
+            <canvas id="benchmarkModeCompareCanvas" height="300"></canvas>
+          </div>
+          <div class="benchmark-chart-card">
+            <h4>Graph Improvement (percentage points)</h4>
+            <p class="benchmark-exp-note" style="margin-bottom:0.35rem;">Positive = graph arm higher on the same 0–100 heuristic scales (includes grounding, traceability, hallucination proxy).</p>
+            <canvas id="benchmarkImprovementCanvas" height="300"></canvas>
+          </div>
+        </div>
+        <p class="benchmark-interpretation" id="benchmarkAugmentationInterpretation" style="display:none;" aria-live="polite"></p>
+        <div class="benchmark-table-wrap">
+          <h4>Test cases</h4>
+          <table class="benchmark-table">
+            <thead>
+              <tr>
+                <th>Patient</th>
+                <th>Query</th>
+                <th>Expected</th>
+                <th>Actual</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody id="benchmarkTestCasesBody"></tbody>
+          </table>
+        </div>
+        <p class="benchmark-note" id="benchmarkFootnote"></p>
+      </div>
+    </div>
+  </div>
+</div>
 <div id="aiResult" class="ai-result-banner" style="display:none;">
   <div class="ai-result-inner">
     <span id="aiViolationBadge" class="violation-badge"></span>
@@ -948,9 +1269,10 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
         <span><span class="color-dot" style="background:#10b981"></span> Normal / Compliant</span>
       </div>
       <h4>Edge Colors</h4>
+      <p style="font-size:0.7rem;color:#64748b;margin:0.15rem 0 0.4rem;line-height:1.4">Hues follow relationship type (hover an edge for full detail). Violations stay solid red.</p>
       <div class="color-coding">
         <span><span class="color-dot" style="background:#dc2626"></span> Violation</span>
-        <span><span class="color-dot" style="background:#10b981"></span> Compliant</span>
+        <span><span class="color-dot" style="background:#eab308"></span> Drugs / treatment</span>
         <span><span class="color-dot" style="background:#94a3b8"></span> Other</span>
       </div>
     </div>
@@ -966,6 +1288,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       <button type="button" onclick="applyFilter()">Apply</button>
       <button type="button" onclick="resetFilter()">Reset</button>
       <button type="button" class="compare-btn" onclick="openCompareModal()">Compare Patients</button>
+      <button type="button" class="benchmark-btn" id="benchmarkRunBtn" onclick="runBenchmark()">Run Benchmark</button>
       <span id="filterLabel">Showing: All</span>
     </div>
     MYNETWORK_PLACEHOLDER
@@ -1032,18 +1355,19 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var net = getNet(); if (!net) return;
     var nodeData = net.body.data.nodes.get(nodeId);
     if (!nodeData) { document.getElementById('explainPanel').classList.add('empty'); return; }
+    var displayName = nodeData.full_label || nodeData.label;
     var expl = nodeData.id_prop ? EXPLANATIONS[nodeData.id_prop] : null;
     var panel = document.getElementById('explainPanel');
     var title = document.getElementById('explainTitle');
     var content = document.getElementById('explainContent');
     panel.classList.remove('empty');
     if (expl && (expl.text || expl.name)) {
-      title.textContent = (expl.name || nodeData.label) + ' — Protocol explanation';
+      title.textContent = (expl.name || displayName) + ' — Protocol explanation';
       var html = (expl.text || '').replace(/\\n/g, '<br>');
       if (expl.references) html += '<br><small>Refs: ' + expl.references + '</small>';
       content.innerHTML = html || 'No explanation available.';
     } else {
-      title.textContent = nodeData.label + ' — Info';
+      title.textContent = displayName + ' — Info';
       content.innerHTML = 'Node type: <strong>' + (nodeData.node_type || '') + '</strong>. Click a Disease, Drug, or Procedure node for protocol explanation (why recommended).';
     }
     if (nodeData.node_type === 'Patient' && nodeData.id_prop) {
@@ -1067,6 +1391,75 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     }
     return Object.keys(seen);
   }
+  function neighborIdSet(centerId) {
+    var net = getNet(); if (!net) return {};
+    var keep = {}; keep[centerId] = true;
+    net.body.data.edges.get().forEach(function(e) {
+      if (e.from === centerId) keep[e.to] = true;
+      else if (e.to === centerId) keep[e.from] = true;
+    });
+    return keep;
+  }
+  function applyEgoHighlight(centerId) {
+    var net = getNet(); if (!net || centerId == null) return;
+    var keep = neighborIdSet(centerId);
+    net.body.data.nodes.getIds().forEach(function(id) {
+      net.body.data.nodes.update({ id: id, opacity: keep[id] ? 1 : 0.14 });
+    });
+    net.body.data.edges.get().forEach(function(e) {
+      var lit = !!(keep[e.from] && keep[e.to]);
+      net.body.data.edges.update({ id: e.id, opacity: lit ? 0.9 : 0.06 });
+    });
+    window._egoActive = true;
+    updatePatientSelectionVisuals();
+  }
+  function clearEgoHighlight() {
+    var net = getNet(); if (!net || !window._egoActive) return;
+    net.body.data.nodes.getIds().forEach(function(id) {
+      net.body.data.nodes.update({ id: id, opacity: 1 });
+    });
+    net.body.data.edges.get().forEach(function(e) {
+      net.body.data.edges.update({ id: e.id, opacity: 1 });
+    });
+    window._egoActive = false;
+    updatePatientSelectionVisuals();
+  }
+  var _zoomDetailTimer = null;
+  function applyZoomProgressiveDetail(scale) {
+    var net = getNet(); if (!net || !net.body.data.nodes) return;
+    var detailed = scale >= 0.72;
+    var hideEdgeLbl = scale < 0.32;
+    net.body.data.nodes.get().forEach(function(nd) {
+      var full = nd.full_label != null ? nd.full_label : nd.label;
+      var short = nd.short_label != null ? nd.short_label : nd.label;
+      var want = detailed ? full : short;
+      var pt = nd.node_type === 'Patient';
+      var fs = detailed ? (pt ? 18 : 14) : (pt ? 16 : 12);
+      if (want !== nd.label || !(nd.font && nd.font.size === fs)) {
+        net.body.data.nodes.update({
+          id: nd.id,
+          label: want,
+          font: Object.assign({}, nd.font || {}, { size: fs, face: 'Inter, system-ui, sans-serif', strokeWidth: 2, strokeColor: 'rgba(255,255,255,0.9)' })
+        });
+      }
+    });
+    try {
+      net.setOptions({
+        edges: {
+          font: {
+            size: hideEdgeLbl ? 0 : Math.max(8, Math.min(11, Math.round(6 + scale * 8))),
+            color: '#64748b',
+            face: 'Inter, system-ui, sans-serif'
+          }
+        }
+      });
+    } catch (e) {}
+  }
+  function onGraphZoom(params) {
+    var sc = params && params.scale != null ? params.scale : 1;
+    if (_zoomDetailTimer) clearTimeout(_zoomDetailTimer);
+    _zoomDetailTimer = setTimeout(function() { applyZoomProgressiveDetail(sc); }, 100);
+  }
   function toNodeArray(raw) { return Array.isArray(raw) ? raw : (raw ? Object.keys(raw).map(function(k) { return raw[k]; }) : []); }
   function applyFilter() {
     var net = getNet();
@@ -1074,6 +1467,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       alert('Graph not ready. Please refresh the page.');
       return;
     }
+    try { clearEgoHighlight(); } catch (e) {}
     if (!window._allNodes || !window._allNodes.length) {
       window._allNodes = toNodeArray(net.body.data.nodes.get());
       window._allEdges = toNodeArray(net.body.data.edges.get());
@@ -1149,7 +1543,10 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     }
     function isRedEdge(e) {
       var c = e.color;
-      return c === '#cc0000' || (c && (typeof c === 'string' ? c : c.color) === '#cc0000');
+      var s = (typeof c === 'string') ? c : (c && c.color);
+      if (!s) return false;
+      if (s === '#dc2626' || s === '#cc0000') return true;
+      return typeof s === 'string' && (s.indexOf('220,38,38') >= 0 || s.indexOf('239,68,68') >= 0);
     }
     allNodes.forEach(function(n) {
       var show = !!visibleIds[n.id];
@@ -1189,7 +1586,25 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       }
       // Re-enable physics so the filtered subgraph lays out correctly (nodes spread out)
       try {
-        net.setOptions({ physics: { enabled: true, solver: 'repulsion', repulsion: { nodeDistance: 220, centralGravity: 0.03, springLength: 180, springConstant: 0.05 }, stabilization: { enabled: true, iterations: 150 } } });
+        net.setOptions({
+          physics: {
+            enabled: true,
+            solver: 'forceAtlas2Based',
+            forceAtlas2Based: {
+              theta: 0.55,
+              gravitationalConstant: -92,
+              centralGravity: 0.011,
+              springLength: 268,
+              springConstant: 0.058,
+              damping: 0.52,
+              avoidOverlap: 0.82
+            },
+            maxVelocity: 42,
+            minVelocity: 2,
+            timestep: 0.52,
+            stabilization: { enabled: true, iterations: 220, updateInterval: 25 }
+          }
+        });
       } catch(e) {}
       function onStabilized() {
         net.off('stabilizationIterationsDone', onStabilized);
@@ -1213,6 +1628,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     if (lab) lab.textContent = 'Showing: All';
     var net = getNet();
     if (!net || !window._allNodes || !window._allEdges) return;
+    try { clearEgoHighlight(); } catch (e) {}
     try {
       var lb = document.getElementById('loadingBar');
       if (lb) { lb.style.display = 'none'; lb.style.opacity = '0'; }
@@ -1223,7 +1639,25 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       window._currentEdges = fullEdges;
       // Re-enable physics so the full graph lays out correctly
       try {
-        net.setOptions({ physics: { enabled: true, solver: 'repulsion', repulsion: { nodeDistance: 220, centralGravity: 0.03, springLength: 180, springConstant: 0.05 }, stabilization: { enabled: true, iterations: 150 } } });
+        net.setOptions({
+          physics: {
+            enabled: true,
+            solver: 'forceAtlas2Based',
+            forceAtlas2Based: {
+              theta: 0.55,
+              gravitationalConstant: -92,
+              centralGravity: 0.011,
+              springLength: 268,
+              springConstant: 0.058,
+              damping: 0.52,
+              avoidOverlap: 0.82
+            },
+            maxVelocity: 42,
+            minVelocity: 2,
+            timestep: 0.52,
+            stabilization: { enabled: true, iterations: 220, updateInterval: 25 }
+          }
+        });
       } catch(e) {}
       function onStabilized() {
         net.off('stabilizationIterationsDone', onStabilized);
@@ -1242,10 +1676,11 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var nodes = window._allNodes || toNodeArray(net.body.data.nodes.get());
     var doctors = {}, patients = {}, diseases = {}, hospitals = {};
     nodes.forEach(function(n) {
-      if (n.node_type === 'Doctor') doctors[n.id_prop] = n.label;
-      if (n.node_type === 'Patient') patients[n.id_prop] = n.label;
-      if (n.node_type === 'Disease') diseases[n.id_prop] = n.label;
-      if (n.node_type === 'Hospital') hospitals[n.id_prop] = n.label;
+      var disp = n.full_label || n.label;
+      if (n.node_type === 'Doctor') doctors[n.id_prop] = disp;
+      if (n.node_type === 'Patient') patients[n.id_prop] = disp;
+      if (n.node_type === 'Disease') diseases[n.id_prop] = disp;
+      if (n.node_type === 'Hospital') hospitals[n.id_prop] = disp;
     });
     function fillSelect(id, map) {
       var sel = document.getElementById(id);
@@ -1266,12 +1701,13 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     allN.forEach(function(n) { if (n.id === nodeId) nodeData = n; });
     if (!nodeData || nodeData.node_type !== 'Patient') return false;
     var pid = nodeData.id_prop || nodeData.id;
+    var nm = nodeData.full_label || nodeData.label || pid;
     var idx = -1;
     _aiSelectedPatients.forEach(function(p, i) { if (p.pid === pid) idx = i; });
     if (idx >= 0) {
       _aiSelectedPatients.splice(idx, 1);
     } else {
-      _aiSelectedPatients.push({ pid: pid, name: nodeData.label || pid, visId: nodeId });
+      _aiSelectedPatients.push({ pid: pid, name: nm, visId: nodeId });
     }
     renderAiContextBar();
     updatePatientSelectionVisuals();
@@ -1288,6 +1724,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     _aiSelectedPatients = [];
     renderAiContextBar();
     updatePatientSelectionVisuals();
+    resetAiQuestion();
   }
 
   function renderAiContextBar() {
@@ -1372,6 +1809,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       }
       if (metaEl) metaEl.classList.remove('error');
       if (badgeEl) {
+        badgeEl.style.display = 'inline-flex';
         badgeEl.textContent = data.violation ? 'Protocol violation' : 'Compliant';
         badgeEl.className = 'violation-badge ' + (data.violation ? 'yes' : 'no');
       }
@@ -1402,13 +1840,27 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     document.getElementById('aiResult').style.display = 'none';
     var abo = document.getElementById('aiBasedOn');
     if (abo) { abo.style.display = 'none'; abo.innerHTML = ''; }
+    var answerEl = document.getElementById('aiAnswer');
+    if (answerEl) {
+      answerEl.innerHTML = '';
+      answerEl.classList.remove('error', 'ai-answer-smart');
+    }
+    var badgeEl = document.getElementById('aiViolationBadge');
+    if (badgeEl) {
+      badgeEl.style.display = 'none';
+      badgeEl.textContent = '';
+      badgeEl.className = 'violation-badge';
+    }
+    var metaEl = document.getElementById('aiMeta');
+    if (metaEl) {
+      metaEl.innerHTML = '';
+      metaEl.classList.remove('error');
+    }
     var textarea = document.getElementById('aiQuestion');
     if (textarea) { textarea.value = ''; textarea.focus(); }
     lastAiResponse = null;
     clearAiHighlight();
-    if (_patientContext && _patientContext.selected) {
-      filterGraphToPatient();
-    }
+    filterGraphToPatient();
   }
   window.resetAiQuestion = resetAiQuestion;
 
@@ -1432,7 +1884,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       var type = idx >= 0 ? s.substring(0, idx) : '';
       var idProp = idx >= 0 ? s.substring(idx + 1) : s;
       var label = idProp;
-      allN.forEach(function(n) { if (n.id_prop === idProp && (!type || (n.node_type || '').toLowerCase() === type.toLowerCase())) label = n.label || idProp; });
+      allN.forEach(function(n) { if (n.id_prop === idProp && (!type || (n.node_type || '').toLowerCase() === type.toLowerCase())) label = n.full_label || n.label || idProp; });
       var gk = typeMap[(type || '').toLowerCase()] || 'other';
       groups[gk].push(label);
     });
@@ -1476,30 +1928,40 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     return s;
   }
 
+  function _countMatchingDataPoints(data) {
+    var seen = {};
+    (data.highlight_nodes || []).forEach(function(s) { if (s) seen[String(s)] = true; });
+    (data.paths || []).forEach(function(p) {
+      (p && p.nodes ? p.nodes : []).forEach(function(n) { if (n) seen[String(n)] = true; });
+    });
+    var graphCount = Object.keys(seen).length;
+    var clinicalFacts = (data.protocol_expected || []).length + (data.actual_treatment || []).length;
+    return graphCount + clinicalFacts;
+  }
+
   function _computeConfidence(data) {
-    var hn = (data.highlight_nodes || []).length;
-    var paths = (data.paths || []).length;
-    var pe = (data.protocol_expected || []).length;
-    var at = (data.actual_treatment || []).length;
-    var total = hn + paths + pe + at;
-    if (total >= 15) return { level: 'high', label: 'High confidence', score: total };
-    if (total >= 5) return { level: 'medium', label: 'Medium confidence', score: total };
-    return { level: 'low', label: 'Low confidence', score: total };
+    var pts = _countMatchingDataPoints(data);
+    if (pts >= 10) return { level: 'high', label: 'High', score: pts };
+    if (pts >= 4) return { level: 'medium', label: 'Medium', score: pts };
+    if (pts >= 1) return { level: 'low', label: 'Low', score: pts };
+    return { level: 'low', label: 'Low', score: 0 };
   }
 
   function _isComparisonResponse(text) {
-    var lower = text.toLowerCase();
-    return lower.indexOf('common') >= 0 && (lower.indexOf('differ') >= 0 || lower.indexOf('unique') >= 0);
+    var lower = (text || '').toLowerCase();
+    return (lower.indexOf('common finding') >= 0 || lower.indexOf('both patients') >= 0 || lower.indexOf('shared') >= 0)
+      && (lower.indexOf('differ') >= 0 || lower.indexOf('versus') >= 0 || lower.indexOf('unique') >= 0 || lower.indexOf('contrast') >= 0);
   }
 
-  function _splitIntoBullets(text) {
-    var lines = text.split('\\n');
-    var bullets = [];
-    lines.forEach(function(l) {
-      var t = l.replace(/^[\\s]*[•\\-\\d.]+[\\s.):]*/, '').trim();
-      if (t.length > 5) bullets.push(t);
-    });
-    return bullets;
+  function _detectSectionHeader(line) {
+    var t = line.replace(/^#+\\s*/, '').replace(/^\\*{1,2}\\s*/, '').replace(/\\*{1,2}$/g, '').trim();
+    var core = t.toLowerCase().replace(/\\s*[：:]\\s*$/, '').replace(/^[*•]\\s*/, '').trim();
+    if (/^conclusion\\b/.test(core)) return 'conclusion';
+    if (/^evidence\\b/.test(core)) return 'evidence';
+    if (/^explanation\\b/.test(core) || /^rationale\\b/.test(core)) return 'explanation';
+    if (/^common\\s+findings?\\b/.test(core) || /^similarities\\b/.test(core)) return 'common';
+    if (/^differences?\\b/.test(core) || /^contrasts?\\b/.test(core)) return 'diff';
+    return null;
   }
 
   function _parseStructured(rawText) {
@@ -1513,71 +1975,156 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
 
     lines.forEach(function(line) {
       var t = line.trim();
-      var lower = t.toLowerCase();
       if (!t) return;
-      if (lower.indexOf('common finding') >= 0 || lower.indexOf('common disease') >= 0 || lower.indexOf('common symptom') >= 0 || lower.indexOf('similarities') >= 0) { phase = 'common'; return; }
-      if (lower.indexOf('differ') >= 0 || lower.indexOf('unique') >= 0) { phase = 'diff'; return; }
-      if (phase === 'common') { var b = t.replace(/^[•\\-\\d.]+[\\s.):]*/, '').trim(); if (b) commonFindings.push(b); return; }
-      if (phase === 'diff') { var b = t.replace(/^[•\\-\\d.]+[\\s.):]*/, '').trim(); if (b) differences.push(b); return; }
+      var hdr = _detectSectionHeader(t);
+      if (hdr) { phase = hdr; return; }
 
-      var isBullet = /^[•\\-]/.test(t) || /^\\d+[.)\\s]/.test(t);
-      if (isBullet) {
-        var b = t.replace(/^[•\\-\\d.]+[\\s.):]*/, '').trim();
-        if (b) evidence.push(b);
-      } else if (!conclusion && t.length > 15 && !lower.startsWith('##') && !lower.startsWith('based on')) {
-        conclusion = t;
-      } else {
+      var lower = t.toLowerCase();
+      if (phase === 'scan') {
+        if ((/^common\\b/i.test(t) && t.length < 96 && (lower.indexOf('finding') >= 0 || lower.indexOf('ality') >= 0))
+          || /^similarities\\b/i.test(t)) {
+          phase = 'common'; return;
+        }
+        if (/^differences?\\b/i.test(t) && t.length < 96) { phase = 'diff'; return; }
+
+        var isBullet = /^[•\\-*]/.test(t) || /^\\d+[.)]\\s/.test(t);
+        if (isBullet) {
+          var eb = t.replace(/^[•\\-*]+\\s*/, '').replace(/^\\d+[.)]\\s*/, '').trim();
+          if (eb) evidence.push(eb);
+        } else if (!conclusion && t.length > 12 && !lower.startsWith('##') && !/^based\\s+on\\b/.test(lower)) {
+          conclusion = t;
+        } else {
+          explanation.push(t);
+        }
+        return;
+      }
+
+      if (phase === 'conclusion') {
+        conclusion = conclusion ? conclusion + ' ' + t : t;
+        return;
+      }
+      if (phase === 'evidence') {
+        var evb = t.replace(/^[•\\-*\\d.)]+\\s*/, '').trim();
+        if (evb) evidence.push(evb);
+        return;
+      }
+      if (phase === 'explanation') {
         explanation.push(t);
+        return;
+      }
+      if (phase === 'common') {
+        var cb = t.replace(/^[•\\-*\\d.)]+\\s*/, '').trim();
+        if (cb) commonFindings.push(cb);
+        return;
+      }
+      if (phase === 'diff') {
+        var db = t.replace(/^[•\\-*\\d.)]+\\s*/, '').trim();
+        if (db) differences.push(db);
+        return;
       }
     });
 
     if (!conclusion && evidence.length) conclusion = evidence.shift();
-    if (!conclusion && explanation.length) { conclusion = explanation.shift(); }
+    if (!conclusion && explanation.length) conclusion = explanation.shift();
 
-    return { conclusion: conclusion, evidence: evidence, explanation: explanation.join(' '), commonFindings: commonFindings, differences: differences };
+    return {
+      conclusion: conclusion || '',
+      evidence: evidence,
+      explanation: explanation.join('\\n').trim(),
+      commonFindings: commonFindings,
+      differences: differences
+    };
+  }
+
+  function _buildEvidenceList(parsed, data) {
+    var ev = parsed.evidence.slice();
+    var seen = {};
+    ev.forEach(function(e) { seen[String(e).toLowerCase()] = true; });
+    (data.protocol_expected || []).forEach(function(x) {
+      var line = 'Protocol expectation: ' + x;
+      if (!seen[line.toLowerCase()]) { ev.push(line); seen[line.toLowerCase()] = true; }
+    });
+    (data.actual_treatment || []).forEach(function(x) {
+      var line = 'Documentation / actual: ' + x;
+      if (!seen[line.toLowerCase()]) { ev.push(line); seen[line.toLowerCase()] = true; }
+    });
+    var pts = _countMatchingDataPoints(data);
+    if (!ev.length) {
+      if (pts > 0) {
+        ev.push('Retrieved context includes ' + pts + ' matching data point(s) from the clinical graph (nodes, paths, or protocol artifacts).');
+      } else if (parsed.conclusion) {
+        ev.push('No discrete graph-backed items were enumerated; synthesis reflects the narrative reply only.');
+      } else {
+        ev.push('No structured evidence lines were available for this response.');
+      }
+    }
+    return ev;
   }
 
   function buildStructuredAiHtml(rawText, data) {
+    var parsed = _parseStructured(_escHtml(rawText || ''));
+    var dataPoints = _countMatchingDataPoints(data);
     var conf = _computeConfidence(data);
-    var isComp = _isComparisonResponse(rawText) || (data.selected_patients && data.selected_patients.length > 1);
-    var parsed = _parseStructured(_escHtml(rawText));
-    var html = '<div class="ai-structured">';
-
-    if (conf.score === 0 && !parsed.conclusion) {
-      html += '<div class="ai-insufficient">Insufficient data to provide a confident conclusion. Try selecting a patient for context or rephrasing your question.</div>';
-      html += '</div>';
-      return html;
+    var displayConf = dataPoints === 0 ? { level: 'low', label: 'Low', score: 0 } : conf;
+    var evidenceList = _buildEvidenceList(parsed, data);
+    var explanationText = parsed.explanation && parsed.explanation.trim();
+    if (!explanationText) {
+      explanationText = 'Interpretation synthesizes the conclusion and evidence above in line with standard clinical documentation review.';
     }
 
-    html += '<div class="ai-section"><div class="ai-section-label"><span class="section-icon">\\u2192</span> Conclusion';
-    html += '<span class="ai-confidence ' + conf.level + '"><span class="conf-dot"></span>' + conf.label + '</span>';
-    html += '</div>';
-    html += '<div class="ai-conclusion">' + _mdInline(parsed.conclusion || 'Analysis complete.') + '</div></div>';
+    var multiPatient = data.selected_patients && data.selected_patients.length > 1;
+    var isComp = multiPatient || _isComparisonResponse(rawText || '')
+      || parsed.commonFindings.length || parsed.differences.length;
 
-    if (isComp && (parsed.commonFindings.length || parsed.differences.length)) {
-      html += '<div class="ai-section"><div class="ai-section-label"><span class="section-icon">\\u2194</span> Comparison</div>';
+    var conclusionBody = parsed.conclusion || (rawText ? _escHtml(rawText).replace(/\\n/g, ' ').trim().substring(0, 800) : '');
+    if (!conclusionBody) conclusionBody = 'No narrative conclusion was returned.';
+
+    var html = '<div class="ai-structured ai-clinical-response">';
+
+    if (dataPoints === 0) {
+      html += '<div class="ai-response-card ai-insufficient-card">';
+      html += '<div class="ai-insufficient-title">Insufficient data to provide a confident conclusion</div>';
+      html += '<p class="ai-insufficient-detail">No matching clinical data points were retrieved for this query. Select patients on the graph or narrow the question for a data-grounded assessment.</p>';
+      html += '</div>';
+    }
+
+    html += '<div class="ai-response-card">';
+    html += '<div class="ai-section-label"><span class="section-icon">\\u2192</span> Conclusion';
+    html += '<span class="ai-confidence ' + displayConf.level + '"><span class="conf-dot"></span>' + displayConf.label + '</span>';
+    html += '</div>';
+    html += '<div class="ai-section"><div class="ai-conclusion">' + _mdInline(conclusionBody) + '</div></div>';
+    html += '</div>';
+
+    if (isComp) {
+      html += '<div class="ai-response-card">';
+      html += '<div class="ai-section-label"><span class="section-icon">\\u2194</span> Multi-patient comparison</div>';
       html += '<div class="ai-comparison-grid">';
-      html += '<div class="ai-comparison-col common"><h6>Common findings</h6>';
-      if (parsed.commonFindings.length) parsed.commonFindings.forEach(function(f) { html += '&bull; ' + _mdInline(f) + '<br>'; });
-      else html += '<em style="color:#94a3b8">None identified</em>';
+      html += '<div class="ai-comparison-col common"><h6>Common Findings</h6>';
+      if (parsed.commonFindings.length) {
+        parsed.commonFindings.forEach(function(f) { html += '&bull; ' + _mdInline(f) + '<br>'; });
+      } else {
+        html += '<span class="ai-placeholder">None parsed from the reply' + (multiPatient ? '; see conclusion and explanation.' : '.') + '</span>';
+      }
       html += '</div>';
       html += '<div class="ai-comparison-col diff"><h6>Differences</h6>';
-      if (parsed.differences.length) parsed.differences.forEach(function(f) { html += '&bull; ' + _mdInline(f) + '<br>'; });
-      else html += '<em style="color:#94a3b8">None identified</em>';
+      if (parsed.differences.length) {
+        parsed.differences.forEach(function(f) { html += '&bull; ' + _mdInline(f) + '<br>'; });
+      } else {
+        html += '<span class="ai-placeholder">None parsed from the reply' + (multiPatient ? '; see conclusion and explanation.' : '.') + '</span>';
+      }
       html += '</div></div></div>';
     }
 
-    if (parsed.evidence.length) {
-      html += '<div class="ai-section"><div class="ai-section-label"><span class="section-icon">\\u2022</span> Evidence</div>';
-      html += '<ul class="ai-evidence">';
-      parsed.evidence.forEach(function(e) { html += '<li>' + _mdInline(e) + '</li>'; });
-      html += '</ul></div>';
-    }
+    html += '<div class="ai-response-card">';
+    html += '<div class="ai-section-label"><span class="section-icon">\\u2022</span> Evidence</div>';
+    html += '<div class="ai-section"><ul class="ai-evidence">';
+    evidenceList.forEach(function(e) { html += '<li>' + _mdInline(e) + '</li>'; });
+    html += '</ul></div></div>';
 
-    if (parsed.explanation && parsed.explanation.trim()) {
-      html += '<div class="ai-section"><div class="ai-section-label"><span class="section-icon">\\u24d8</span> Explanation</div>';
-      html += '<div class="ai-explanation">' + _mdInline(parsed.explanation) + '</div></div>';
-    }
+    html += '<div class="ai-response-card">';
+    html += '<div class="ai-section-label"><span class="section-icon">\\u24d8</span> Explanation</div>';
+    html += '<div class="ai-section"><div class="ai-explanation">' + _mdInline(explanationText) + '</div></div>';
+    html += '</div>';
 
     html += '</div>';
     return html;
@@ -1672,11 +2219,15 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       }
     });
 
+    var preAiNodes = JSON.parse(JSON.stringify(window._allNodes || []));
+    var preAiEdges = JSON.parse(JSON.stringify(window._allEdges || []));
+
     try {
       nodeDS.update(nodeUpdates);
       edgeDS.update(edgeUpdates);
       net.redraw();
       _aiHighlightActive = true;
+      window._aiGraphSnapshotBeforeHighlight = { nodes: preAiNodes, edges: preAiEdges };
       document.getElementById('filterLabel').textContent = 'Showing: AI highlight (' + matchCount + ' nodes)';
       var btn = document.getElementById('aiHighlightBtn');
       if (btn) btn.textContent = 'Reset Graph';
@@ -1690,28 +2241,35 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
         setTimeout(function() { toast.style.opacity = '0'; }, 2500);
         setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 3200);
       }
-    } catch(e) { console.error('highlightFromAi:', e); }
+    } catch(e) {
+      console.error('highlightFromAi:', e);
+      window._aiGraphSnapshotBeforeHighlight = null;
+    }
   }
 
   function clearAiHighlight() {
-    if (!_aiHighlightActive) return;
-    var net = getNet();
-    if (!net || !net.body || !net.body.data) return;
-    var nodeDS = net.body.data.nodes;
-    var edgeDS = net.body.data.edges;
-    if (!nodeDS || !edgeDS || !window._allNodes || !window._allEdges) return;
-    var nodeRestore = window._allNodes.map(function(n) {
-      return { id: n.id, color: n.color, font: n.font, size: n.size, borderWidth: n.borderWidth, shadow: n.shadow };
-    });
-    var edgeRestore = window._allEdges.map(function(e) {
-      return { id: e.id, color: e.color, width: e.width };
-    });
-    try {
-      nodeDS.update(nodeRestore);
-      edgeDS.update(edgeRestore);
-    } catch(e) { console.error('clearAiHighlight error:', e); }
+    var fullSnap = window._aiGraphSnapshotBeforeHighlight;
+    var shouldRestore = _aiHighlightActive || fullSnap;
+    if (!shouldRestore) return;
+
+    if (fullSnap && fullSnap.nodes && fullSnap.edges) {
+      window._allNodes = JSON.parse(JSON.stringify(fullSnap.nodes));
+      window._allEdges = JSON.parse(JSON.stringify(fullSnap.edges));
+      window._aiGraphSnapshotBeforeHighlight = null;
+    }
+
     _aiHighlightActive = false;
-    document.getElementById('filterLabel').textContent = 'Showing: All';
+
+    try {
+      filterGraphToPatient();
+    } catch(e) { console.error('clearAiHighlight filterGraphToPatient:', e); }
+
+    try {
+      if (!_patientContext || !_patientContext.selected) {
+        document.getElementById('filterLabel').textContent = 'Showing: All';
+      }
+    } catch(e2) {}
+
     var btn = document.getElementById('aiHighlightBtn');
     if (btn) btn.textContent = 'Highlight in Graph';
   }
@@ -1915,6 +2473,10 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       .then(function(r) { return r.ok ? r.json() : []; })
       .then(function(patients) {
         if (!patients) return;
+        window._patientSourceById = window._patientSourceById || {};
+        patients.forEach(function(p) {
+          if (p.patient_id) window._patientSourceById[p.patient_id] = p.source || null;
+        });
         var nodes = net.body.data.nodes;
         var edges = net.body.data.edges;
         var allN = toNodeArray(nodes.get());
@@ -1980,7 +2542,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
           nodes.add({
             id: nodeId, label: p.patient_name || pid,
             color: '#3b82f6', title: title,
-            id_prop: pid, node_type: 'Patient', size: 22, borderWidth: 2,
+            id_prop: pid, node_type: 'Patient', patient_source: p.source || null, size: 22, borderWidth: 2,
             shadow: { enabled: true, size: 8, x: 0, y: 2, color: 'rgba(0,0,0,0.08)' },
             font: { size: 14, color: '#334155' }
           });
@@ -2013,6 +2575,9 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
 
         if (changed) {
           try {
+            if (typeof clearAiHighlight === 'function' && (_aiHighlightActive || window._aiGraphSnapshotBeforeHighlight)) {
+              clearAiHighlight();
+            }
             window._allNodes = toNodeArray(nodes.get());
             window._allEdges = toNodeArray(edges.get());
           } catch(e) {}
@@ -2034,6 +2599,12 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   var _compareOriginalNodes = null;
   var _compareOriginalEdges = null;
 
+  function _patientNodeSource(n) {
+    if (n.patient_source) return n.patient_source;
+    if (n.id_prop && window._patientSourceById) return window._patientSourceById[n.id_prop];
+    return null;
+  }
+
   function openCompareModal() {
     var allN = window._allNodes || [];
     var pts = allN.filter(function(n) { return n.node_type === 'Patient'; });
@@ -2041,15 +2612,33 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var preSelected = {};
     if (_patientContext.selected) preSelected[_patientContext.selected.pid] = true;
     _patientContext.selectedMulti.forEach(function(p) { preSelected[p.pid] = true; });
-    var html = '';
+    var real = []; var sample = [];
     pts.forEach(function(p) {
-      var checked = preSelected[p.id_prop] ? ' checked' : '';
-      html += '<label class="compare-patient-item">';
-      html += '<input type="checkbox" value="' + (p.id_prop || p.id) + '"' + checked + ' onchange="updateCompareBtn()">';
-      html += '<span class="cp-name">' + (p.label || p.id_prop || '') + '</span>';
-      html += '<span class="cp-id">' + (p.id_prop || '') + '</span>';
-      html += '</label>';
+      if (_patientSourceIsMimic(_patientNodeSource(p))) sample.push(p);
+      else real.push(p);
     });
+    function row(p) {
+      var checked = preSelected[p.id_prop] ? ' checked' : '';
+      var h = '<label class="compare-patient-item">';
+      h += '<input type="checkbox" value="' + (p.id_prop || p.id) + '"' + checked + ' onchange="updateCompareBtn()">';
+      h += '<span class="cp-name">' + (p.label || p.id_prop || '') + '</span>';
+      h += '<span class="cp-id">' + (p.id_prop || '') + '</span>';
+      h += '</label>';
+      return h;
+    }
+    var html = '';
+    var twoGroups = real.length > 0 && sample.length > 0;
+    var onlySample = sample.length > 0 && real.length === 0;
+    if (twoGroups) {
+      html += '<div class="ps-group-label">Real patients</div>';
+      real.forEach(function(p) { html += row(p); });
+      html += '<div class="ps-group-label">Sample patients (MIMIC)</div>';
+      sample.forEach(function(p) { html += row(p); });
+    } else {
+      if (onlySample) html += '<div class="ps-group-label">Sample patients (MIMIC)</div>';
+      real.forEach(function(p) { html += row(p); });
+      sample.forEach(function(p) { html += row(p); });
+    }
     if (!pts.length) html = '<p class="compare-none">No patients found in the graph.</p>';
     document.getElementById('comparePatientList').innerHTML = html;
     updateCompareBtn();
@@ -2216,6 +2805,545 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   window.updateCompareBtn = updateCompareBtn;
   window.runComparison = runComparison;
   window.closeComparison = closeComparison;
+
+  /* ---- Benchmark Results UI (display layer only; optional GET /benchmark) ---- */
+  var _benchmarkCharts = { radar: null, bar: null, modeCompare: null, improvement: null };
+  var DEMO_BENCHMARK_PAYLOAD = {
+    overall_score: 78,
+    status_label: 'moderate',
+    metrics: {
+      ai_clinical_accuracy: 82,
+      graph_coverage_score: 74,
+      patient_context_accuracy: 88,
+      response_consistency: 71,
+      graph_impact_score: 76
+    },
+    graph_impact: {
+      score: 76,
+      breakdown: {
+        avg_nodes_used_per_case: 11.4,
+        avg_relationships_used_per_case: 9.2,
+        unique_node_labels_seen: ['Patient', 'Disease', 'Drug', 'Procedure', 'ClinicalState'],
+        unique_relationship_types_seen: ['HAS_DISEASE', 'HAS_VIOLATION', 'HAS_CLINICAL_STATE', 'TREATED_WITH'],
+        percent_graph_based_reasoning: 63.5,
+        percent_non_graph_reasoning: 36.5
+      },
+      comparison: {
+        graph_measured_score: 76,
+        llm_baseline_simulated_score: 49,
+        graph_influence_delta: 27,
+        graph_improvement_score: 27,
+        llm_baseline_descriptor: 'LLM Baseline (heuristic simulation, not rerun model)',
+        non_causal_interpretation_note: 'This metric does not represent causal performance difference due to evaluation constraints.',
+        disclaimer: 'Baseline is not directly comparable due to different evaluation constraints.',
+        interpretation_note: 'Graph-augmented values are measured on this system; LLM baseline is a bounded heuristic on the same outputs—not a paired rerun without Neo4j.',
+        experiment_structure: {
+          graph_enabled_run: true,
+          graph_disabled_run: null,
+          graph_disabled_run_note: 'True isolation mode placeholder — reserved for future graph-disabled paired benchmark.'
+        },
+        with_graph_score: 76,
+        without_graph_estimated_score: 49,
+        note: 'Demo: LLM baseline is simulated from the same responses under a no-graph heuristic.'
+      }
+    },
+    paired_comparison: {
+      methodology: 'Demo: paired WITH_GRAPH (Neo4j-backed) vs WITHOUT_GRAPH (LLM-only arm), same prompts per case. Extra metrics capture grounding and traceability beyond raw accuracy.',
+      with_graph: {
+        ai_clinical_accuracy: 82, response_consistency: 71, patient_context_accuracy: 88,
+        graph_grounding_score: 79, reasoning_traceability_score: 76, hallucination_reduction_score: 74
+      },
+      without_graph: {
+        ai_clinical_accuracy: 68, response_consistency: 64, patient_context_accuracy: 72,
+        graph_grounding_score: 38, reasoning_traceability_score: 52, hallucination_reduction_score: 49
+      },
+      graph_improvement_pct: {
+        ai_clinical_accuracy: 14, response_consistency: 7, patient_context_accuracy: 16,
+        graph_grounding_score: 41, reasoning_traceability_score: 24, hallucination_reduction_score: 25
+      },
+      without_graph_llm_arm_executed: true,
+      interpretation_layer: {
+        graph_augmentation_note: 'Graph augmentation may not significantly change final answer accuracy, but improves clinical grounding, reasoning structure, and traceability of AI outputs.'
+      }
+    },
+    experiment_modes: {
+      WITH_GRAPH: { label: 'WITH_GRAPH', description: 'Neo4j context.', metrics: {
+        ai_clinical_accuracy: 82, response_consistency: 71, patient_context_accuracy: 88,
+        graph_grounding_score: 79, reasoning_traceability_score: 76, hallucination_reduction_score: 74
+      } },
+      WITHOUT_GRAPH: { label: 'WITHOUT_GRAPH', description: 'No Neo4j injection.', metrics: {
+        ai_clinical_accuracy: 68, response_consistency: 64, patient_context_accuracy: 72,
+        graph_grounding_score: 38, reasoning_traceability_score: 52, hallucination_reduction_score: 49
+      } }
+    },
+    test_cases: [
+      { patient_id: 'P23', query: 'Does this patient meet oral anticoagulation safety criteria given their last INR?', expected: 'Contraindicated: recent GI bleed documented; hold anticoagulation and reassess.', actual: 'Flags active GI bleed in notes; recommends holding anticoagulant and gastroenterology review.', score: 92 },
+      { patient_id: 'P12', query: 'Summarize Type 2 diabetes protocol adherence.', expected: 'HbA1c monitoring and metformin as first-line; gap in quarterly labs.', actual: 'Identifies Metformin; notes missing HbA1c interval vs protocol.', score: 81 },
+      { patient_id: 'P4', query: 'Which follow-up appointments are overdue?', expected: 'Cardiology within 90 days per CHF pathway.', actual: 'Lists overdue PCP visit; misses cardiology interval from graph edge.', score: 64 },
+      { patient_id: 'M10006', query: 'Compare sepsis bundle completion for this encounter.', expected: 'Lactate ordered; fluids and antibiotics timing per hour-1 bundle.', actual: 'Cites lactate and antibiotics; fluid bolus timing partially aligned.', score: 73 }
+    ],
+    generated_at: new Date().toISOString(),
+    source: 'demo'
+  };
+
+  function destroyBenchmarkCharts() {
+    if (_benchmarkCharts.radar) {
+      try { _benchmarkCharts.radar.destroy(); } catch (e) {}
+      _benchmarkCharts.radar = null;
+    }
+    if (_benchmarkCharts.bar) {
+      try { _benchmarkCharts.bar.destroy(); } catch (e) {}
+      _benchmarkCharts.bar = null;
+    }
+    if (_benchmarkCharts.modeCompare) {
+      try { _benchmarkCharts.modeCompare.destroy(); } catch (e) {}
+      _benchmarkCharts.modeCompare = null;
+    }
+    if (_benchmarkCharts.improvement) {
+      try { _benchmarkCharts.improvement.destroy(); } catch (e) {}
+      _benchmarkCharts.improvement = null;
+    }
+  }
+
+  function benchmarkStatusFromScore(score) {
+    if (score >= 80) return { key: 'good', label: 'Good' };
+    if (score >= 60) return { key: 'moderate', label: 'Moderate' };
+    return { key: 'needs_improvement', label: 'Needs Improvement' };
+  }
+
+  var BENCHMARK_BASELINE_DISCLAIMER = 'Baseline is not directly comparable due to different evaluation constraints.';
+  var BENCHMARK_NON_CAUSAL_NOTE = 'This metric does not represent causal performance difference due to evaluation constraints.';
+  var BENCHMARK_GRAPH_AUGMENTATION_NOTE = 'Graph augmentation may not significantly change final answer accuracy, but improves clinical grounding, reasoning structure, and traceability of AI outputs.';
+  var BENCHMARK_EXPERIMENT_PLACEHOLDER = {
+    graph_enabled_run: true,
+    graph_disabled_run: null,
+    graph_disabled_run_note: 'True isolation mode placeholder — reserved for future graph-disabled paired benchmark.'
+  };
+
+  function enrichGraphImpactComparison(gi, fallbackScore) {
+    if (!gi) return null;
+    var c = gi.comparison || {};
+    var gm = c.graph_measured_score != null ? Number(c.graph_measured_score)
+      : (c.with_graph_score != null ? Number(c.with_graph_score)
+        : (gi.score != null ? Number(gi.score) : (fallbackScore != null ? Number(fallbackScore) : NaN)));
+    var lb = c.llm_baseline_simulated_score != null ? Number(c.llm_baseline_simulated_score)
+      : (c.without_graph_estimated_score != null ? Number(c.without_graph_estimated_score) : NaN);
+    if (isNaN(lb) && !isNaN(gm)) {
+      lb = Math.max(22, Math.min(71, Math.round(62 - gm * 0.35)));
+    }
+    var delta = c.graph_influence_delta != null ? Number(c.graph_influence_delta)
+      : (c.graph_improvement_score != null ? Number(c.graph_improvement_score) : NaN);
+    if (isNaN(delta) && !isNaN(gm) && !isNaN(lb)) delta = Math.round(gm - lb);
+    var exp = c.experiment_structure && typeof c.experiment_structure === 'object' ? c.experiment_structure : BENCHMARK_EXPERIMENT_PLACEHOLDER;
+    gi.comparison = Object.assign({}, c, {
+      graph_measured_score: isNaN(gm) ? null : gm,
+      llm_baseline_simulated_score: isNaN(lb) ? null : lb,
+      graph_influence_delta: isNaN(delta) ? null : delta,
+      graph_improvement_score: isNaN(delta) ? null : delta,
+      experiment_structure: exp,
+      non_causal_interpretation_note: (c.non_causal_interpretation_note && String(c.non_causal_interpretation_note).trim())
+        ? c.non_causal_interpretation_note : BENCHMARK_NON_CAUSAL_NOTE,
+      disclaimer: (c.disclaimer && String(c.disclaimer).trim()) ? c.disclaimer : BENCHMARK_BASELINE_DISCLAIMER
+    });
+    return gi;
+  }
+
+  function normalizeBenchmarkPayload(raw) {
+    var o = raw || {};
+    var overall = o.overall_score != null ? Number(o.overall_score) : (o.overall != null ? Number(o.overall) : NaN);
+    if (isNaN(overall)) overall = 0;
+    overall = Math.max(0, Math.min(100, Math.round(overall)));
+    var m = o.metrics || {};
+    function pick(a, b, c) {
+      var v = m[a];
+      if (v == null) v = m[b];
+      if (v == null) v = c;
+      return Math.max(0, Math.min(100, Math.round(Number(v || 0))));
+    }
+    var metrics = {
+      ai_clinical_accuracy: pick('ai_clinical_accuracy', 'aiClinicalAccuracy', overall),
+      graph_coverage_score: pick('graph_coverage_score', 'graphCoverageScore', overall),
+      patient_context_accuracy: pick('patient_context_accuracy', 'patientContextAccuracy', overall),
+      response_consistency: pick('response_consistency', 'responseConsistency', overall),
+      graph_impact_score: pick('graph_impact_score', 'graphImpactScore', overall)
+    };
+    var cases = Array.isArray(o.test_cases) ? o.test_cases : (Array.isArray(o.cases) ? o.cases : []);
+    var gi = o.graph_impact;
+    if (!gi && metrics.graph_impact_score != null) {
+      gi = { score: metrics.graph_impact_score, breakdown: {}, comparison: {} };
+    }
+    if (gi) enrichGraphImpactComparison(gi, metrics.graph_impact_score);
+    return {
+      overall_score: overall,
+      status_label: o.status_label || o.status || '',
+      metrics: metrics,
+      graph_impact: gi || null,
+      paired_comparison: o.paired_comparison || null,
+      experiment_modes: o.experiment_modes || null,
+      test_cases: cases,
+      generated_at: o.generated_at || o.run_at || '',
+      source: o.source || 'api',
+      note: o.note || ''
+    };
+  }
+
+  function renderBenchmarkResults(data) {
+    destroyBenchmarkCharts();
+    function formatBenchmarkDelta(d) {
+      if (d == null || isNaN(Number(d))) return '\\u2014';
+      var n = Math.round(Number(d));
+      return (n > 0 ? '+' : '') + n;
+    }
+    var overall = Math.max(0, Math.min(100, Math.round(data.overall_score)));
+    var st = benchmarkStatusFromScore(overall);
+    var raw = (data.status_label || data.status || '').toString().trim();
+    if (raw) {
+      var sl = raw.toLowerCase().replace(/\\s+/g, '_');
+      if (sl === 'good') st = { key: 'good', label: 'Good' };
+      else if (sl === 'moderate') st = { key: 'moderate', label: 'Moderate' };
+      else if (sl === 'needs_improvement' || raw.toLowerCase().indexOf('needs') === 0) st = { key: 'needs_improvement', label: 'Needs Improvement' };
+      else st = { key: st.key, label: raw };
+    }
+    var pill = document.getElementById('benchmarkStatusPill');
+    if (pill) {
+      pill.className = 'benchmark-status-pill ' + st.key;
+      pill.textContent = st.label;
+    }
+    var numEl = document.getElementById('benchmarkOverallNum');
+    if (numEl) numEl.innerHTML = overall + '<span>/100</span>';
+
+    var meta = document.getElementById('benchmarkRunMeta');
+    if (meta) {
+      var parts = [];
+      if (data.generated_at) {
+        try { parts.push('Run: ' + new Date(data.generated_at).toLocaleString()); } catch (e) { parts.push('Run: ' + data.generated_at); }
+      }
+      if (data.source === 'demo') parts.push('Sample data');
+      meta.textContent = parts.join(' \\u2014 ');
+    }
+
+    var grid = document.getElementById('benchmarkMetricsGrid');
+    if (grid) {
+      var cards = [
+        { k: 'ai_clinical_accuracy', title: 'AI Clinical Accuracy' },
+        { k: 'graph_coverage_score', title: 'Graph Coverage Score' },
+        { k: 'patient_context_accuracy', title: 'Patient Context Accuracy' },
+        { k: 'response_consistency', title: 'Response Consistency' },
+        { k: 'graph_impact_score', title: 'Graph Impact Score (0\u2013100)' }
+      ];
+      grid.innerHTML = cards.map(function(c) {
+        var v = data.metrics[c.k] != null ? data.metrics[c.k] : 0;
+        var w = Math.max(0, Math.min(100, v));
+        return '<div class="benchmark-metric-card"><div class="bm-label">' + c.title + '</div><div class="bm-value">' + v + '</div><div class="bm-bar"><i style="width:' + w + '%"></i></div></div>';
+      }).join('');
+    }
+
+    var giDetails = document.getElementById('benchmarkGIDetails');
+    var giBody = document.getElementById('benchmarkGIBreakdownBody');
+    var giRow = document.getElementById('benchmarkGraphCompareRow');
+    var withEl = document.getElementById('bcWithG');
+    var withoutEl = document.getElementById('bcWithoutG');
+    var deltaEl = document.getElementById('bcDeltaG');
+    var discStripEl = document.getElementById('benchmarkCompareDisclaimer');
+    var toggleEl = document.getElementById('benchmarkCompareGraphToggle');
+    var gix = data.graph_impact;
+    if (gix) enrichGraphImpactComparison(gix, data.metrics && data.metrics.graph_impact_score);
+    else if (data.metrics && data.metrics.graph_impact_score != null) {
+      gix = { score: data.metrics.graph_impact_score, breakdown: {}, comparison: {} };
+      enrichGraphImpactComparison(gix, data.metrics.graph_impact_score);
+    }
+    if (giDetails) giDetails.style.display = gix ? '' : 'none';
+    if (giBody && gix) {
+      var br = gix.breakdown || {};
+      var cmpPre = gix.comparison || {};
+      var gmPre = cmpPre.graph_measured_score != null ? cmpPre.graph_measured_score : (cmpPre.with_graph_score != null ? cmpPre.with_graph_score : gix.score);
+      var lbPre = cmpPre.llm_baseline_simulated_score != null ? cmpPre.llm_baseline_simulated_score : cmpPre.without_graph_estimated_score;
+      var deltaPre = cmpPre.graph_influence_delta != null ? cmpPre.graph_influence_delta
+        : (cmpPre.graph_improvement_score != null ? cmpPre.graph_improvement_score : (gmPre != null && lbPre != null ? Math.round(gmPre - lbPre) : null));
+      var nodesL = (br.unique_node_labels_seen || []).join(', ') || '\\u2014';
+      var relsL = (br.unique_relationship_types_seen || []).join(', ') || '\\u2014';
+      giBody.innerHTML = '<table><tbody>'
+        + '<tr><th>Avg. nodes used / case</th><td>' + (br.avg_nodes_used_per_case != null ? br.avg_nodes_used_per_case : '\\u2014') + '</td></tr>'
+        + '<tr><th>Avg. relationships used / case</th><td>' + (br.avg_relationships_used_per_case != null ? br.avg_relationships_used_per_case : '\\u2014') + '</td></tr>'
+        + '<tr><th>Node labels (union)</th><td style="word-break:break-word;">' + nodesL + '</td></tr>'
+        + '<tr><th>Relationship types (union)</th><td style="word-break:break-word;">' + relsL + '</td></tr>'
+        + '<tr><th>% graph-based reasoning (est.)</th><td>' + (br.percent_graph_based_reasoning != null ? br.percent_graph_based_reasoning + '%' : '\\u2014') + '</td></tr>'
+        + '<tr><th>% non-graph reasoning (est.)</th><td>' + (br.percent_non_graph_reasoning != null ? br.percent_non_graph_reasoning + '%' : '\\u2014') + '</td></tr>'
+        + '<tr><th>Graph Influence Delta (non-causal estimate)</th><td>' + formatBenchmarkDelta(deltaPre) + '</td></tr>'
+        + '</tbody></table>'
+        + (cmpPre.interpretation_note ? '<p style="margin-top:0.5rem;font-size:0.625rem;color:#64748b;line-height:1.45;">' + String(cmpPre.interpretation_note).replace(/</g, '&lt;') + '</p>' : '')
+        + (cmpPre.non_causal_interpretation_note ? '<p style="margin-top:0.35rem;font-size:0.625rem;color:#475569;font-weight:500;">' + String(cmpPre.non_causal_interpretation_note).replace(/</g, '&lt;') + '</p>' : '')
+        + (function() {
+            var es = cmpPre.experiment_structure;
+            if (!es) return '';
+            return '<p style="margin-top:0.5rem;font-size:0.625rem;color:#64748b;"><strong>Future baseline structure:</strong> graph_enabled_run=' + String(es.graph_enabled_run)
+              + '; graph_disabled_run=' + (es.graph_disabled_run != null ? String(es.graph_disabled_run) : 'null')
+              + (es.graph_disabled_run_note ? '. ' + String(es.graph_disabled_run_note).replace(/</g, '&lt;') : '') + '</p>';
+          })()
+        + (cmpPre.note ? '<p style="margin-top:0.35rem;font-size:0.625rem;color:#94a3b8;">' + String(cmpPre.note).replace(/</g, '&lt;') + '</p>' : '')
+        + (cmpPre.disclaimer ? '<p style="margin-top:0.35rem;font-size:0.625rem;font-weight:600;color:#64748b;">' + String(cmpPre.disclaimer).replace(/</g, '&lt;') + '</p>' : '');
+    } else if (giBody) giBody.innerHTML = '';
+
+    var cmp = gix && gix.comparison ? gix.comparison : {};
+    var gm = cmp.graph_measured_score != null ? cmp.graph_measured_score : (cmp.with_graph_score != null ? cmp.with_graph_score : (gix && gix.score != null ? gix.score : null));
+    var lb = cmp.llm_baseline_simulated_score != null ? cmp.llm_baseline_simulated_score : cmp.without_graph_estimated_score;
+    var dlt = cmp.graph_influence_delta != null ? cmp.graph_influence_delta
+      : (cmp.graph_improvement_score != null ? cmp.graph_improvement_score : (gm != null && lb != null ? Math.round(gm - lb) : null));
+    if (withEl) withEl.textContent = gm != null ? gm : '\\u2014';
+    if (withoutEl) withoutEl.textContent = lb != null ? lb : '\\u2014';
+    if (deltaEl) deltaEl.textContent = formatBenchmarkDelta(dlt);
+    var baselineLabEl = document.getElementById('bcBaselineLab');
+    if (baselineLabEl) baselineLabEl.textContent = (cmp.llm_baseline_descriptor && String(cmp.llm_baseline_descriptor).trim())
+      ? cmp.llm_baseline_descriptor : 'LLM Baseline (heuristic simulation, not rerun model)';
+    if (discStripEl) {
+      var p1 = (cmp.disclaimer && String(cmp.disclaimer).trim()) ? cmp.disclaimer : BENCHMARK_BASELINE_DISCLAIMER;
+      var p2 = (cmp.non_causal_interpretation_note && String(cmp.non_causal_interpretation_note).trim())
+        ? cmp.non_causal_interpretation_note : BENCHMARK_NON_CAUSAL_NOTE;
+      discStripEl.textContent = p1 + '\\n\\n' + p2;
+    }
+    if (toggleEl) {
+      toggleEl.checked = false;
+      if (giRow) giRow.classList.remove('visible');
+      toggleEl.onchange = function() {
+        if (giRow) giRow.classList.toggle('visible', toggleEl.checked);
+      };
+    }
+
+    var labels = ['AI Clinical Accuracy', 'Graph Coverage', 'Patient Context', 'Response Consistency', 'Graph Impact'];
+    var vals = [
+      data.metrics.ai_clinical_accuracy,
+      data.metrics.graph_coverage_score,
+      data.metrics.patient_context_accuracy,
+      data.metrics.response_consistency,
+      data.metrics.graph_impact_score != null ? data.metrics.graph_impact_score : (gix && gix.score != null ? gix.score : 0)
+    ];
+
+    var chartOpts = {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        r: {
+          min: 0,
+          max: 100,
+          ticks: { stepSize: 20, color: '#94a3b8', font: { size: 10 } },
+          grid: { color: '#e2e8f0' },
+          pointLabels: { color: '#64748b', font: { size: 10, family: 'Inter,system-ui,sans-serif' } }
+        }
+      },
+      plugins: { legend: { display: false } }
+    };
+
+    var radarEl = document.getElementById('benchmarkRadarCanvas');
+    if (radarEl && typeof Chart !== 'undefined') {
+      _benchmarkCharts.radar = new Chart(radarEl.getContext('2d'), {
+        type: 'radar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Score',
+            data: vals,
+            borderColor: '#3b82f6',
+            backgroundColor: 'rgba(59,130,246,0.22)',
+            borderWidth: 2,
+            pointBackgroundColor: '#1d4ed8'
+          }]
+        },
+        options: chartOpts
+      });
+    }
+
+    var barEl = document.getElementById('benchmarkBarCanvas');
+    if (barEl && typeof Chart !== 'undefined') {
+      _benchmarkCharts.bar = new Chart(barEl.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Score',
+            data: vals,
+            backgroundColor: ['rgba(59,130,246,0.85)', 'rgba(14,165,233,0.85)', 'rgba(16,185,129,0.85)', 'rgba(139,92,246,0.85)', 'rgba(234,88,12,0.85)'],
+            borderRadius: 6
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          indexAxis: 'y',
+          scales: {
+            x: { min: 0, max: 100, grid: { color: '#f1f5f9' }, ticks: { color: '#64748b', font: { size: 10 } } },
+            y: { grid: { display: false }, ticks: { color: '#475569', font: { size: 10 } } }
+          },
+          plugins: { legend: { display: false } }
+        }
+      });
+    }
+
+    var expSec = document.getElementById('benchmarkExperimentSection');
+    var expNote = document.getElementById('benchmarkExperimentNote');
+    var interpAug = document.getElementById('benchmarkAugmentationInterpretation');
+    var pc = data.paired_comparison;
+    if (expSec) {
+      if (pc && pc.with_graph && pc.without_graph && typeof Chart !== 'undefined') {
+        expSec.style.display = '';
+        if (expNote) expNote.textContent = pc.methodology || '';
+        if (interpAug) {
+          interpAug.style.display = '';
+          interpAug.textContent = (pc.interpretation_layer && pc.interpretation_layer.graph_augmentation_note)
+            ? pc.interpretation_layer.graph_augmentation_note : BENCHMARK_GRAPH_AUGMENTATION_NOTE;
+        }
+        var pv = function(o, k) { return o && o[k] != null ? Number(o[k]) : null; };
+        var modeLabels = [
+          'AI clinical acc.', 'Response consistency', 'Patient context',
+          'Graph grounding', 'Traceability', 'Hallucination reduction'
+        ];
+        var metricKeys = [
+          'ai_clinical_accuracy', 'response_consistency', 'patient_context_accuracy',
+          'graph_grounding_score', 'reasoning_traceability_score', 'hallucination_reduction_score'
+        ];
+        var wg = pc.with_graph;
+        var ng = pc.without_graph;
+        var valsWG = metricKeys.map(function(k) { var v = pv(wg, k); return v != null ? v : 0; });
+        var valsNG = metricKeys.map(function(k) { var v = pv(ng, k); return v != null ? v : 0; });
+        var modeEl = document.getElementById('benchmarkModeCompareCanvas');
+        if (modeEl) {
+          _benchmarkCharts.modeCompare = new Chart(modeEl.getContext('2d'), {
+            type: 'bar',
+            data: {
+              labels: modeLabels,
+              datasets: [
+                { label: 'With Graph', data: valsWG, backgroundColor: 'rgba(59,130,246,0.85)', borderRadius: 5 },
+                { label: 'Without Graph', data: valsNG, backgroundColor: 'rgba(148,163,184,0.85)', borderRadius: 5 }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              scales: {
+                y: { min: 0, max: 100, grid: { color: '#f1f5f9' }, ticks: { color: '#64748b', font: { size: 10 } } },
+                x: { grid: { display: false }, ticks: { color: '#475569', font: { size: 8 }, maxRotation: 55, minRotation: 35 } }
+              },
+              plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } }
+            }
+          });
+        }
+        var imp = pc.graph_improvement_pct || {};
+        var impVals = metricKeys.map(function(k, i) {
+          var iv = pv(imp, k);
+          return iv != null ? iv : (valsWG[i] - valsNG[i]);
+        });
+        var impColors = impVals.map(function(v) {
+          if (v > 0) return 'rgba(16,185,129,0.9)';
+          if (v < 0) return 'rgba(239,68,68,0.9)';
+          return 'rgba(148,163,184,0.85)';
+        });
+        var impEl = document.getElementById('benchmarkImprovementCanvas');
+        if (impEl) {
+          var vmin = Math.min.apply(null, impVals.concat([0]));
+          var vmax = Math.max.apply(null, impVals.concat([0]));
+          var pad = Math.max(5, Math.abs(vmax - vmin) * 0.15);
+          _benchmarkCharts.improvement = new Chart(impEl.getContext('2d'), {
+            type: 'bar',
+            data: {
+              labels: modeLabels,
+              datasets: [{
+                label: 'Delta (pp)',
+                data: impVals,
+                backgroundColor: impColors,
+                borderRadius: 5
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              indexAxis: 'y',
+              scales: {
+                x: {
+                  grid: { color: '#f1f5f9' },
+                  ticks: { color: '#64748b', font: { size: 9 } },
+                  suggestedMin: vmin - pad,
+                  suggestedMax: vmax + pad
+                },
+                y: { grid: { display: false }, ticks: { color: '#475569', font: { size: 8 } } }
+              },
+              plugins: { legend: { display: false } }
+            }
+          });
+        }
+      } else {
+        expSec.style.display = 'none';
+        if (interpAug) { interpAug.style.display = 'none'; interpAug.textContent = ''; }
+      }
+    }
+
+    var tbody = document.getElementById('benchmarkTestCasesBody');
+    if (tbody) {
+      var rows = (data.test_cases || []).length ? data.test_cases : DEMO_BENCHMARK_PAYLOAD.test_cases;
+      tbody.innerHTML = rows.map(function(tc) {
+        var pid = tc.patient_id || tc.patientId || '\\u2014';
+        var q = tc.query || tc.question || '\\u2014';
+        var ex = tc.expected || tc.expected_result || '\\u2014';
+        var ac = tc.actual || tc.actual_result || '\\u2014';
+        var sc = tc.score != null ? tc.score : '\\u2014';
+        return '<tr><td class="mono">' + String(pid).replace(/</g, '&lt;') + '</td><td>' + String(q).replace(/</g, '&lt;') + '</td><td>' + String(ex).replace(/</g, '&lt;') + '</td><td>' + String(ac).replace(/</g, '&lt;') + '</td><td class="tc-score">' + sc + (typeof sc === 'number' ? '%' : '') + '</td></tr>';
+      }).join('');
+      if (!rows.length) tbody.innerHTML = '<tr><td colspan="5" style="color:#94a3b8;font-style:italic;">No test cases in payload.</td></tr>';
+    }
+
+    var foot = document.getElementById('benchmarkFootnote');
+    if (foot) {
+      if (data.note) foot.textContent = data.note;
+      else if (data.source === 'demo') foot.textContent = 'Sample benchmark payload for UI review. Implement GET /benchmark on your API to return live evaluation JSON in the same shape.';
+      else foot.textContent = 'Scores are illustrative of evaluation dimensions; wire your benchmark runner to populate this panel.';
+    }
+  }
+
+  function openBenchmarkModal() {
+    var m = document.getElementById('benchmarkModal');
+    if (m) { m.classList.add('open'); m.setAttribute('aria-hidden', 'false'); }
+  }
+
+  function closeBenchmarkModal() {
+    destroyBenchmarkCharts();
+    var modal = document.getElementById('benchmarkModal');
+    if (modal) { modal.classList.remove('open'); modal.setAttribute('aria-hidden', 'true'); }
+  }
+
+  function runBenchmark() {
+    var btn = document.getElementById('benchmarkRunBtn');
+    if (btn) btn.disabled = true;
+    openBenchmarkModal();
+    var loadEl = document.getElementById('benchmarkLoading');
+    var contentEl = document.getElementById('benchmarkContent');
+    if (loadEl) loadEl.classList.add('visible');
+    if (contentEl) contentEl.classList.remove('visible');
+
+    var apiUrl = (document.getElementById('aiApiUrl') && document.getElementById('aiApiUrl').value || 'http://localhost:8000').replace(/\\/$/, '');
+    var done = function(payload, isDemo) {
+      renderBenchmarkResults(payload);
+      if (isDemo) {
+        var foot = document.getElementById('benchmarkFootnote');
+        if (foot) foot.textContent = 'Showing sample benchmark data (no GET /benchmark response). Connect your evaluation endpoint to display live runs.';
+      }
+      if (loadEl) loadEl.classList.remove('visible');
+      if (contentEl) contentEl.classList.add('visible');
+      if (btn) btn.disabled = false;
+    };
+
+    fetch(apiUrl + '/benchmark', { method: 'GET', headers: { Accept: 'application/json' } })
+      .then(function(r) {
+        if (!r.ok) throw new Error('benchmark unavailable');
+        return r.json();
+      })
+      .then(function(json) {
+        done(normalizeBenchmarkPayload(json), false);
+      })
+      .catch(function() {
+        done(normalizeBenchmarkPayload(DEMO_BENCHMARK_PAYLOAD), true);
+      });
+  }
+
+  window.runBenchmark = runBenchmark;
+  window.closeBenchmarkModal = closeBenchmarkModal;
 
   /* ---- Clinical Timeline ---- */
   var _tlCharts = {};
@@ -2522,10 +3650,18 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var nodes = window._allNodes || [];
     var pts = [];
     nodes.forEach(function(n) {
-      if (n.node_type === 'Patient' && n.id_prop) pts.push({ pid: n.id_prop, name: n.label || n.id_prop, visId: n.id });
+      if (n.node_type === 'Patient' && n.id_prop) {
+        var src = n.patient_source;
+        if (src == null && window._patientSourceById) src = window._patientSourceById[n.id_prop];
+        pts.push({ pid: n.id_prop, name: n.label || n.id_prop, visId: n.id, patient_source: src });
+      }
     });
     pts.sort(function(a, b) { return a.name.localeCompare(b.name); });
     return pts;
+  }
+
+  function _patientSourceIsMimic(src) {
+    return src === 'mimic_sample';
   }
 
   function _buildPsList(filter) {
@@ -2533,16 +3669,49 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     if (!el) return;
     var pts = _getAllPatientNodes();
     var q = (filter || '').toLowerCase();
-    el.innerHTML = '';
+    function matches(p) {
+      if (!q) return true;
+      return p.name.toLowerCase().indexOf(q) >= 0 || p.pid.toLowerCase().indexOf(q) >= 0;
+    }
+    var real = [];
+    var sample = [];
     pts.forEach(function(p) {
-      if (q && p.name.toLowerCase().indexOf(q) < 0 && p.pid.toLowerCase().indexOf(q) < 0) return;
+      if (!matches(p)) return;
+      if (_patientSourceIsMimic(p.patient_source)) sample.push(p);
+      else real.push(p);
+    });
+    el.innerHTML = '';
+    function addRow(p) {
       var div = document.createElement('div');
-      div.className = 'ps-item';
+      div.className = 'ps-item' + (_patientSourceIsMimic(p.patient_source) ? ' mimic-sample' : '');
       div.innerHTML = '<span class="ps-dot"></span><span class="ps-name">' + p.name + '</span><span class="ps-id">' + p.pid + '</span>';
       div.onclick = function() { selectGlobalPatient(p.pid, p.name, p.visId); };
       el.appendChild(div);
-    });
-    if (!el.children.length) el.innerHTML = '<p style="color:#94a3b8;font-size:0.8125rem;text-align:center;padding:1rem;">No patients found</p>';
+    }
+    var twoGroups = real.length > 0 && sample.length > 0;
+    var onlySampleGroup = sample.length > 0 && real.length === 0;
+    if (twoGroups) {
+      var hr = document.createElement('div');
+      hr.className = 'ps-group-label';
+      hr.textContent = 'Real patients';
+      el.appendChild(hr);
+      real.forEach(addRow);
+      var hs = document.createElement('div');
+      hs.className = 'ps-group-label';
+      hs.textContent = 'Sample patients (MIMIC)';
+      el.appendChild(hs);
+      sample.forEach(addRow);
+    } else {
+      if (onlySampleGroup) {
+        var hx = document.createElement('div');
+        hx.className = 'ps-group-label';
+        hx.textContent = 'Sample patients (MIMIC)';
+        el.appendChild(hx);
+      }
+      real.forEach(addRow);
+      sample.forEach(addRow);
+    }
+    if (!el.querySelector('.ps-item')) el.innerHTML = '<p style="color:#94a3b8;font-size:0.8125rem;text-align:center;padding:1rem;">No patients found</p>';
   }
   window.filterPsPatients = function(val) { _buildPsList(val); };
 
@@ -2597,6 +3766,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   function filterGraphToPatient() {
     var net = getNet();
     if (!net || !net.body || !net.body.data) return;
+    try { clearEgoHighlight(); } catch (e) {}
     var allNodes = window._allNodes;
     var allEdges = window._allEdges;
     if (!allNodes || !allNodes.length) return;
@@ -2681,13 +3851,24 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     function attachToGraph() {
       var net = getNet();
       if (net) {
-        net.on('click', function(params) {
-          if (params.nodes && params.nodes.length) {
-            var clickedId = params.nodes[0];
-            togglePatientSelection(clickedId);
-            showExplanation(clickedId);
-          }
-        });
+        if (!window._graphHooksDone) {
+          window._graphHooksDone = true;
+          net.on('click', function(params) {
+            if (params.nodes && params.nodes.length) {
+              var clickedId = params.nodes[0];
+              applyEgoHighlight(clickedId);
+              togglePatientSelection(clickedId);
+              showExplanation(clickedId);
+            } else {
+              clearEgoHighlight();
+            }
+          });
+          net.on('zoom', function(p) { onGraphZoom(p); });
+        }
+        try {
+          var sc = typeof net.getScale === 'function' ? net.getScale() : 1;
+          applyZoomProgressiveDetail(sc);
+        } catch (e) {}
         populateFilterOptions();
         syncPatientsFromBackend(function() {
           _buildPsList('');

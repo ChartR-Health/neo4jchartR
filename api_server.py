@@ -374,6 +374,20 @@ def patient_timeline_endpoint(patient_id: str):
     }
 
 
+@app.get("/benchmark")
+def benchmark_endpoint():
+    """
+    Run the clinical benchmark: Neo4j-backed WITH_GRAPH arm plus paired WITHOUT_GRAPH LLM-only arm
+    (same prompts per case). Returns heuristic scores and paired_comparison aggregates.
+    """
+    try:
+        from benchmark_eval import run_clinical_benchmark
+
+        return run_clinical_benchmark()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/patients-sync")
 def patients_sync_endpoint():
     """
@@ -398,6 +412,7 @@ def root():
             "POST /analyze-patient": "patient_id -> patient protocol analysis + highlight_query",
             "POST /upload-document": "Upload medical document -> extracted data preview",
             "POST /confirm-patient": "Confirm extracted data -> create Patient in Neo4j",
+            "GET  /benchmark": "Run live heuristic benchmark -> scores + test case table",
             "GET  /patients-sync": "All patients + relationships for graph/filter sync",
         },
         "docs": "/docs",

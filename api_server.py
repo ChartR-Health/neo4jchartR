@@ -22,10 +22,12 @@ from document_upload import extract_text_from_upload, extract_medical_data
 from neo4j_ops import (
     create_patient_from_document,
     get_all_patients_graph_data,
+    get_patient_scoped_graph_payload,
     get_patients_for_comparison,
     get_patient_timeline_data,
 )
 from ai_compliance import check_patient_compliance
+from neo4j_config import USE_GRAPH_DEMO
 
 
 app = FastAPI(
@@ -43,6 +45,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _graph_demo_blocks_persisted_queries() -> None:
+    """AI agent, benchmark, and patient creation execute Cypher or expect a writable graph."""
+    if USE_GRAPH_DEMO:
+        raise HTTPException(
+            status_code=503,
+            detail="This action needs a live Neo4j database. Set USE_GRAPH_DEMO=0 (or remove it) and configure NEO4J_URI in .env.",
+        )
 
 
 # -------- Request/response models --------
@@ -94,6 +105,7 @@ def ask_agent_endpoint(body: AskAgentRequest):
     Returns the structured response so the dashboard can display the answer and
     highlight the relevant nodes in the graph visualization.
     """
+    _graph_demo_blocks_persisted_queries()
     question = (body.question or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="question is required")
@@ -130,6 +142,7 @@ def analyze_patient_endpoint(body: AnalyzePatientRequest):
     Returns the same structured response as /ask-agent so the dashboard can
     display the result and highlight the graph (answer, violation, highlight_nodes, highlight_query).
     """
+    _graph_demo_blocks_persisted_queries()
     patient_id = (body.patient_id or "").strip()
     if not patient_id:
         raise HTTPException(status_code=400, detail="patient_id is required")
@@ -174,6 +187,7 @@ def confirm_patient_endpoint(body: ConfirmPatientRequest):
     Confirm extracted data and create the Patient (+ Symptom, Disease,
     ClinicalState) nodes in Neo4j.  Returns the created patient info.
     """
+    _graph_demo_blocks_persisted_queries()
     if not body.symptoms and not body.diseases and not body.clinical_values:
         raise HTTPException(
             status_code=400,
@@ -380,6 +394,7 @@ def benchmark_endpoint():
     Run the clinical benchmark: Neo4j-backed WITH_GRAPH arm plus paired WITHOUT_GRAPH LLM-only arm
     (same prompts per case). Returns heuristic scores and paired_comparison aggregates.
     """
+    _graph_demo_blocks_persisted_queries()
     try:
         from benchmark_eval import run_clinical_benchmark
 
@@ -402,11 +417,26 @@ def patients_sync_endpoint():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/patient-graph/{patient_id}")
+def patient_graph_endpoint(patient_id: str):
+    """
+    Patient-rooted subgraph only: vis-network nodes + relationships.
+    All traversals start at Patient {id}; no global graph dump.
+    """
+    try:
+        return get_patient_scoped_graph_payload(patient_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/")
 def root():
     """Health and endpoint list."""
     return {
         "service": "Compliance Dashboard API",
+        "use_graph_demo": USE_GRAPH_DEMO,
         "endpoints": {
             "POST /ask-agent": "Natural language question -> AI analysis + highlight_query",
             "POST /analyze-patient": "patient_id -> patient protocol analysis + highlight_query",
@@ -414,6 +444,7 @@ def root():
             "POST /confirm-patient": "Confirm extracted data -> create Patient in Neo4j",
             "GET  /benchmark": "Run live heuristic benchmark -> scores + test case table",
             "GET  /patients-sync": "All patients + relationships for graph/filter sync",
+            "GET  /patient-graph/{patient_id}": "Patient-scoped vis subgraph (backend-enforced)",
         },
         "docs": "/docs",
     }

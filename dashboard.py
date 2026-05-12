@@ -6,21 +6,22 @@ Keep neo4j_ops, ai_compliance, api unchanged; this module only reads from them.
 """
 import json
 import re
+import subprocess
+import sys
 import webbrowser
 from pathlib import Path
 
 from pyvis.network import Network
 
-from neo4j_config import NEO4J_DATABASE
-from neo4j_connect import get_driver
 from ai_compliance import run_compliance_check
 from neo4j_ops import get_patients_with_diseases
 from sepsis_compliance import sync_violations_to_neo4j
 from protocol_explanations import get_explanation, get_why_recommended_better, PROTOCOL_EXPLANATIONS
+from graph_edge_tooltips import edge_tooltip_plain
+from graph_node_tooltips import format_node_tooltip_plain, protocol_catalog_node_ids
 
 OUTPUT_HTML = Path(__file__).resolve().parent / "compliance_dashboard.html"
 NODE_LIMIT = 400
-REL_LIMIT = 400
 
 NODE_COLORS = {
     "Patient": "#3b82f6",
@@ -120,35 +121,6 @@ EDGE_TYPES_LIST = [
 ]
 
 
-def _run_query_driver(driver, cypher: str, params: dict | None = None):
-    params = params or {}
-    with driver.session(database=NEO4J_DATABASE) as session:
-        result = session.run(cypher, params)
-        return [dict(record) for record in result]
-
-
-def _get_graph_rows(driver, limit: int):
-    params = {"limit": limit}
-    cypher_v5 = """
-    MATCH (a)-[r]->(b)
-    RETURN elementId(a) AS src_id, coalesce(labels(a)[0], 'Unknown') AS src_label, properties(a) AS src_props,
-           type(r) AS rel_type,
-           elementId(b) AS tgt_id, coalesce(labels(b)[0], 'Unknown') AS tgt_label, properties(b) AS tgt_props
-    LIMIT $limit
-    """
-    cypher_v4 = """
-    MATCH (a)-[r]->(b)
-    RETURN toString(id(a)) AS src_id, coalesce(labels(a)[0], 'Unknown') AS src_label, properties(a) AS src_props,
-           type(r) AS rel_type,
-           toString(id(b)) AS tgt_id, coalesce(labels(b)[0], 'Unknown') AS tgt_label, properties(b) AS tgt_props
-    LIMIT $limit
-    """
-    try:
-        return _run_query_driver(driver, cypher_v5, params)
-    except Exception:
-        return _run_query_driver(driver, cypher_v4, params)
-
-
 def _build_violation_set(compliance_result):
     violation_edges = set()
     violation_tooltips = {}
@@ -229,25 +201,14 @@ def _is_sepsis_bundle_node(label: str, props: dict) -> bool:
 
 def build_dashboard_graph():
     """Build pyvis network with enhanced tooltips and node metadata (id_prop, node_type) for dashboard."""
-    # Sync sepsis violations to Neo4j so Violation nodes appear in the graph when user asks "what patients have violations"
+    # Sync sepsis violations to Neo4j so Violation nodes appear when queried via API-backed graph.
     try:
         sync_violations_to_neo4j()
     except Exception:
         pass
-    driver = get_driver()
-    try:
-        rows = _get_graph_rows(driver, REL_LIMIT)
-    finally:
-        driver.close()
-    if not rows:
-        return None, None, None
-
-    # Exclude sepsis bundle (guideline + actions/labs/drugs/procedures) so only patients and their data are shown
-    rows = [
-        r for r in rows
-        if not _is_sepsis_bundle_node(r.get("src_label") or "", r.get("src_props") or {})
-        and not _is_sepsis_bundle_node(r.get("tgt_label") or "", r.get("tgt_props") or {})
-    ]
+    # Do not embed a global MATCH (a)-[r]->(b) graph — it leaks all patients at first paint.
+    # Runtime loads GET /patient-graph/{patient_id} only (patient-isolated subgraph).
+    rows: list[dict] = []
 
     compliance = run_compliance_check()
     violation_edges, violation_tooltips = _build_violation_set(compliance)
@@ -321,7 +282,7 @@ def build_dashboard_graph():
         "zoomView": true,
         "dragView": true,
         "hover": true,
-        "tooltipDelay": 160,
+        "tooltipDelay": 260,
         "hideEdgesOnDrag": false,
         "hideEdgesOnZoom": false
       }
@@ -330,50 +291,49 @@ def build_dashboard_graph():
     def node_color(label):
         return NODE_COLORS.get(label, DEFAULT_NODE_COLOR)
 
+    rec_drugs, rec_procs = protocol_catalog_node_ids(rows)
+
     for nid, data in nodes_dict.items():
         label = data["label"]
         raw_name = str(data["name"])
         id_prop = data.get("id_prop") or ""
         node_color_override = None
+        props = data.get("props") or {}
         if label == "Patient":
-            age = data["props"].get("age")
-            sex = data["props"].get("sex")
             diseases = data.get("patient_diseases") or []
-            title = f"<b>Patient: {raw_name}</b><br>Age: {age or '—'} | Sex: {sex or '—'}<br>Diseases: {', '.join(diseases) or '—'}"
+            title = format_node_tooltip_plain(
+                label,
+                raw_name,
+                props,
+                patient_diseases=diseases,
+            )
             full_label = raw_name
         elif label == "Doctor":
-            spec = data["props"].get("specialty")
             score_data = data.get("doctor_score")
-            score = f"{score_data['compliance_score']}%" if score_data else "—"
-            title = f"<b>Doctor: {raw_name}</b><br>Specialty: {spec or '—'}<br>Compliance score: {score}"
+            score_str = f"{score_data['compliance_score']}%" if score_data else None
+            title = format_node_tooltip_plain(
+                label,
+                raw_name,
+                props,
+                doctor_compliance_pct=score_str,
+            )
             full_label = raw_name
         elif label == "ClinicalState":
-            p = data["props"]
-            title = (f"<b>Clinical state: {raw_name}</b><br>SOFA: {p.get('sofa_score') or '—'} | "
-                     f"Lactate: {p.get('lactate') or '—'} mmol/L | MAP: {p.get('map') or '—'} mmHg<br>"
-                     f"GCS: {p.get('gcs') or '—'} | Creatinine: {p.get('creatinine') or '—'} mg/dL<br>"
-                     f"Antibiotics: {p.get('antibiotics_active')} | Cultures: {p.get('cultures_ordered')} | Vasopressors: {p.get('vasopressors_active')}")
+            title = format_node_tooltip_plain(label, raw_name, props)
             full_label = raw_name
         elif label == "SepsisGuideline":
-            p = data["props"]
-            title = f"<b>Sepsis guideline: {raw_name}</b><br>{p.get('description') or '—'}<br>SOFA≥{p.get('sofa_threshold_high')} | Lactate>{p.get('lactate_threshold_mmol')} | MAP<{p.get('map_threshold_mmhg')}"
+            title = format_node_tooltip_plain(label, raw_name, props)
             full_label = raw_name
         elif label == "Violation":
             props = data["props"] or {}
             desc = props.get("description") or raw_name
             severity = (props.get("severity") or "warning").lower()
-            reason = props.get("reason") or ""
-            sev_label = severity.upper()
-            title = (f"<b>Violation — <span style='color:{VIOLATION_SEVERITY_COLORS.get(severity, '#f59e0b')}'>"
-                     f"{sev_label}</span></b><br>{desc}")
-            if reason:
-                title += f"<br><br><b>Reason:</b> {reason}"
+            title = format_node_tooltip_plain(label, desc, props)
             node_color_override = VIOLATION_SEVERITY_COLORS.get(severity, "#f59e0b")
             full_label = desc
         else:
-            title = f"<b>{label}: {raw_name}</b>"
-            if data["props"].get("icd10"):
-                title += f"<br>ICD-10: {data['props']['icd10']}"
+            rc = (label == "Drug" and nid in rec_drugs) or (label == "Procedure" and nid in rec_procs)
+            title = format_node_tooltip_plain(label, raw_name, props, recommended_catalog=rc)
             full_label = raw_name
 
         bg = node_color_override if label == "Violation" and node_color_override else node_color(label)
@@ -421,9 +381,13 @@ def build_dashboard_graph():
         is_violation = key in violation_edges
         sn = str((nodes_dict.get(src) or {}).get("name") or "")
         tn = str((nodes_dict.get(tgt) or {}).get("name") or "")
+        sl = (nodes_dict.get(src) or {}).get("label")
+        tl = (nodes_dict.get(tgt) or {}).get("label")
         if is_violation:
             vt = violation_tooltips.get(key, rel_type + " (VIOLATION)")
-            title = f"<b>{rel_type}</b> — violation<br><b>{sn}</b> → <b>{tn}</b><br>{vt}"
+            title = edge_tooltip_plain(
+                rel_type, sn, tn, source_type=sl, target_type=tl, violation=True, violation_detail=vt
+            )
             net.add_edge(
                 src,
                 tgt,
@@ -436,9 +400,14 @@ def build_dashboard_graph():
             continue
         rgba = EDGE_REL_RGBA.get(rel_type, "rgba(148,163,184,0.42)")
         width = 1.75 if rel_type in ("HAS_DISEASE", "HAS_SYMPTOM", "TREATS", "RECOMMENDED_DRUG") else 1.4
-        title = f"<b>{rel_type}</b><br>{sn} → {tn}"
-        if rel_type in TREATMENT_REL_TYPES:
-            title += "<br><small style='color:#059669'>Compliant pathway</small>"
+        title = edge_tooltip_plain(
+            rel_type,
+            sn,
+            tn,
+            source_type=sl,
+            target_type=tl,
+            compliant_pathway=(rel_type in TREATMENT_REL_TYPES),
+        )
         net.add_edge(
             src,
             tgt,
@@ -495,7 +464,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   #loadingBar { display: none !important; opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; }
 
   /* ===== HEADER ===== */
-  .app-header { background: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 0 1.5rem; height: 64px;
+  .app-header { background: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 0.5rem 1.5rem; min-height: 64px;
     display: flex; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.04); z-index: 20; flex-shrink: 0; }
   .app-header-inner { display: flex; align-items: center; width: 100%; gap: 1rem; }
   .app-brand { display: flex; align-items: center; gap: 0.625rem; flex-shrink: 0; }
@@ -503,19 +472,35 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   .app-brand h1 { font-size: 1.05rem; font-weight: 700; color: #0f172a; white-space: nowrap; letter-spacing: -0.02em; }
 
   /* ===== AI SEARCH BAR ===== */
-  .ai-search-wrapper { flex: 1; max-width: 900px; }
-  .ai-search-box { display: flex; align-items: center; background: #f8fafc; border: 1.5px solid #e2e8f0;
-    border-radius: 12px; padding: 0.25rem 0.25rem 0.25rem 0.75rem; transition: all 0.2s ease; }
+  .ai-search-wrapper { flex: 1; max-width: 900px; min-width: 0; }
+  .ai-search-box { display: flex; flex-direction: column; align-items: stretch; gap: 0; background: #f8fafc; border: 1.5px solid #e2e8f0;
+    border-radius: 12px; padding: 0.3rem 0.35rem 0.3rem 0.75rem; transition: all 0.2s ease; }
   .ai-search-box:focus-within { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); background: #fff; }
-  .ai-search-box .search-icon { width: 18px; height: 18px; color: #94a3b8; flex-shrink: 0; margin-right: 0.5rem; }
-  .ai-search-box textarea { flex: 1; border: none; background: transparent; font-size: 0.875rem; color: #0f172a;
-    outline: none; resize: none; font-family: inherit; line-height: 1.5; padding: 0.375rem 0; min-height: 22px; max-height: 60px; }
-  .ai-search-box textarea::placeholder { color: #94a3b8; }
-  .ai-search-box button { padding: 0.5rem 1rem; background: #3b82f6; color: #fff; border: none; border-radius: 8px;
-    font-size: 0.8125rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease; white-space: nowrap; font-family: inherit; }
-  .ai-search-box button:hover { background: #2563eb; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(37,99,235,0.3); }
-  .ai-search-box button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
-  .ai-loading { font-size: 0.8125rem; color: #64748b; padding: 0.5rem 0 0; display: flex; align-items: center; gap: 0.5rem; }
+  .ai-search-main-row { display: flex; align-items: center; width: 100%; min-width: 0; }
+  .ai-search-main-row .search-icon { width: 18px; height: 18px; color: #94a3b8; flex-shrink: 0; margin-right: 0.5rem; }
+  .ai-search-main-row textarea { flex: 1; border: none; background: transparent; font-size: 0.875rem; color: #0f172a;
+    outline: none; resize: none; font-family: inherit; line-height: 1.5; padding: 0.375rem 0; min-height: 22px; max-height: 60px; min-width: 0; }
+  .ai-search-main-row textarea::placeholder { color: #94a3b8; }
+  .ai-search-main-row button { padding: 0.5rem 1rem; background: #3b82f6; color: #fff; border: none; border-radius: 8px;
+    font-size: 0.8125rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease; white-space: nowrap; font-family: inherit; flex-shrink: 0; }
+  .ai-search-main-row button:hover { background: #2563eb; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(37,99,235,0.3); }
+  .ai-search-main-row button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+  .ai-loading {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 0.3rem;
+    padding: 0.45rem 0.5rem 0.42rem;
+    border-top: 1px solid #e2e8f0;
+    border-radius: 0 0 8px 8px;
+    background: linear-gradient(180deg, #f8fafc 0%, #f0f9ff 100%);
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: #475569;
+  }
   .loading-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #e2e8f0;
     border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.6s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -557,6 +542,15 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   .ai-confidence.high .conf-dot { background: #16a34a; }
   .ai-confidence.medium .conf-dot { background: #f59e0b; }
   .ai-confidence.low .conf-dot { background: #dc2626; }
+  .ai-patient-status { display: flex; align-items: flex-start; gap: 0.45rem; padding: 0.4rem 0.55rem; margin: 0 0 0.45rem;
+    border-radius: 8px; font-size: 0.6875rem; line-height: 1.45; border: 1px solid transparent; }
+  .ai-patient-status .ai-ps-emoji { flex-shrink: 0; font-size: 0.85rem; line-height: 1.2; }
+  .ai-patient-status .ai-ps-copy { min-width: 0; }
+  .ai-patient-status .ai-ps-title { font-weight: 600; color: #0f172a; display: block; }
+  .ai-patient-status .ai-ps-sub { color: #64748b; font-weight: 400; display: block; margin-top: 0.08rem; font-size: 0.65rem; }
+  .ai-patient-status.ai-ps-stable { background: #f0fdf4; border-color: #bbf7d0; }
+  .ai-patient-status.ai-ps-attention { background: #fffbeb; border-color: #fde68a; }
+  .ai-patient-status.ai-ps-contact { background: #fef2f2; border-color: #fecaca; }
   .ai-section { margin-bottom: 0; }
   .ai-section-label { font-size: 0.625rem; font-weight: 700; color: #64748b; text-transform: uppercase;
     letter-spacing: 0.05em; margin: 0 0 0.2rem; display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
@@ -569,6 +563,11 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     position: relative; }
   .ai-evidence li::before { content: ''; position: absolute; left: 0.25rem; top: 0.55rem;
     width: 5px; height: 5px; border-radius: 50%; background: #3b82f6; }
+  .ai-evidence-patient-wrap { display: flex; flex-direction: column; gap: 0.65rem; }
+  .ai-evidence-group-label { font-size: 0.625rem; font-weight: 700; color: #64748b; text-transform: uppercase;
+    letter-spacing: 0.05em; margin: 0 0 0.2rem; }
+  .ai-evidence-sub { margin-top: 0; }
+  .ai-evidence-sub li { color: #334155; }
   .ai-explanation { font-size: 0.75rem; color: #475569; line-height: 1.55; white-space: pre-wrap; }
   .ai-insufficient { padding: 0.625rem 0.75rem; background: #fffbeb; border: 1px solid #fde68a;
     border-radius: 8px; font-size: 0.8125rem; color: #92400e; line-height: 1.5; text-align: left; }
@@ -586,9 +585,156 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     background: #1e40af; color: #fff; padding: 8px 20px; border-radius: 8px; font-size: 13px; font-weight: 600;
     box-shadow: 0 4px 16px rgba(30,64,175,0.3); pointer-events: none; transition: opacity 0.5s; }
 
+  /* ===== LOGIN (role selection + forms) ===== */
+  .login-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2100;
+    display: flex; align-items: center; justify-content: center;
+    padding: 1.25rem;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: linear-gradient(165deg, #f8fafc 0%, #f0f9ff 45%, #ecfdf5 100%);
+    animation: fadeIn 0.35s ease;
+  }
+  .login-shell {
+    width: 100%; max-width: 560px;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 1.15rem;
+  }
+  .login-brand {
+    display: flex; align-items: center; gap: 0.55rem;
+    color: #0f172a; font-weight: 700; font-size: 1.125rem; letter-spacing: -0.02em;
+  }
+  .login-brand svg { width: 28px; height: 28px; color: #0d9488; flex-shrink: 0; }
+  .login-tagline {
+    margin: -0.35rem 0 0; font-size: 0.8125rem; color: #64748b; font-weight: 500; text-align: center;
+  }
+  .login-role-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; width: 100%;
+    transition: opacity 0.25s ease;
+  }
+  .login-role-grid.is-hidden { display: none; }
+  @media (max-width: 520px) {
+    .login-role-grid { grid-template-columns: 1fr; }
+  }
+  .login-role-card {
+    display: flex; flex-direction: column; align-items: flex-start; text-align: left;
+    padding: 1.35rem 1.2rem; border: none; cursor: pointer; font-family: inherit;
+    background: rgba(255,255,255,0.88); backdrop-filter: blur(12px);
+    border-radius: 20px;
+    box-shadow: 0 4px 24px rgba(15,23,42,0.06), 0 1px 3px rgba(15,23,42,0.04);
+    transition: transform 0.28s cubic-bezier(0.34, 1.45, 0.64, 1), box-shadow 0.28s ease;
+    border: 1px solid rgba(226,232,240,0.85);
+  }
+  .login-role-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 18px 44px rgba(13,148,136,0.11), 0 8px 20px rgba(15,23,42,0.06);
+  }
+  .login-role-card:active { transform: translateY(-2px); }
+  .login-role-card:focus-visible {
+    outline: 2px solid #14b8a6; outline-offset: 3px;
+  }
+  .login-role-card.clinician .login-role-icon-wrap {
+    background: linear-gradient(135deg, #e0f2fe 0%, #ccfbf1 100%); color: #0e7490;
+  }
+  .login-role-card.patient .login-role-icon-wrap {
+    background: linear-gradient(135deg, #eff6ff 0%, #e0e7ff 100%); color: #4f46e5;
+  }
+  .login-role-icon-wrap {
+    width: 48px; height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center;
+    margin-bottom: 0.8rem;
+  }
+  .login-role-icon-wrap svg { width: 26px; height: 26px; }
+  .login-role-title { font-size: 1rem; font-weight: 700; color: #0f172a; margin: 0 0 0.15rem; }
+  .login-role-sub {
+    font-size: 0.625rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em;
+    color: #0d9488; margin: 0 0 0.45rem;
+  }
+  .login-role-card.patient .login-role-sub { color: #6366f1; }
+  .login-role-desc { font-size: 0.8125rem; color: #64748b; line-height: 1.45; margin: 0; }
+
+  .login-form-panel {
+    display: none; width: 100%; max-width: 400px;
+    background: rgba(255,255,255,0.93); backdrop-filter: blur(12px);
+    border-radius: 20px; padding: 1.5rem 1.65rem 1.65rem;
+    box-shadow: 0 12px 40px rgba(15,23,42,0.08), 0 2px 8px rgba(15,23,42,0.04);
+    border: 1px solid rgba(226,232,240,0.9);
+  }
+  .login-form-panel.is-visible {
+    display: block;
+    animation: loginFormIn 0.42s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+  @keyframes loginFormIn {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .login-back {
+    background: none; border: none; color: #64748b; font-size: 0.8125rem; cursor: pointer;
+    font-family: inherit; padding: 0 0 0.9rem; margin: 0; display: flex; align-items: center; gap: 0.35rem;
+    transition: color 0.15s;
+  }
+  .login-back:hover { color: #0d9488; }
+  .login-form-panel h3 { font-size: 1.0625rem; font-weight: 700; color: #0f172a; margin: 0 0 0.25rem; }
+  .login-form-sub { font-size: 0.8125rem; color: #64748b; margin: 0 0 1rem; line-height: 1.45; }
+  .login-label {
+    display: block; font-size: 0.625rem; font-weight: 700; color: #475569;
+    text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.3rem;
+  }
+  .login-field {
+    width: 100%; padding: 0.65rem 0.9rem; border: 1px solid #e2e8f0; border-radius: 12px;
+    font-size: 0.875rem; color: #0f172a; font-family: inherit; margin-bottom: 0.8rem; box-sizing: border-box;
+    background: #fff; transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .login-field:focus { border-color: #14b8a6; outline: none; box-shadow: 0 0 0 3px rgba(20,184,166,0.12); }
+  .login-submit {
+    width: 100%; padding: 0.72rem 1rem;
+    background: linear-gradient(135deg, #0d9488 0%, #0ea5e9 100%);
+    color: #fff; border: none; border-radius: 12px;
+    font-size: 0.875rem; font-weight: 600; cursor: pointer; font-family: inherit; margin-top: 0.3rem;
+    transition: opacity 0.2s, transform 0.18s, box-shadow 0.2s;
+    box-shadow: 0 4px 14px rgba(13,148,136,0.22);
+  }
+  .login-submit:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(13,148,136,0.28);
+  }
+  .login-submit:disabled { opacity: 0.68; cursor: wait; transform: none; }
+  .login-submit .login-submit-loading { display: none; }
+  .login-submit.loading .login-submit-text { display: none; }
+  .login-submit.loading .login-submit-loading { display: inline; }
+  .login-error {
+    color: #dc2626; font-size: 0.8125rem; min-height: 1.25rem; margin-bottom: 0.6rem;
+    text-align: left; line-height: 1.35;
+  }
+  .login-trust {
+    font-size: 0.6875rem; color: #64748b; opacity: 0.72; text-align: center; margin: 0; max-width: 26rem;
+    line-height: 1.55; letter-spacing: 0.02em;
+  }
+  .auth-transition-overlay {
+    position: fixed; inset: 0; z-index: 2200;
+    display: none; align-items: center; justify-content: center;
+    background: rgba(248,250,252,0.88); backdrop-filter: blur(10px);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    animation: fadeIn 0.25s ease;
+  }
+  .auth-transition-card {
+    display: flex; flex-direction: column; align-items: center; gap: 1rem;
+    padding: 1.5rem 2rem; text-align: center;
+  }
+  .auth-transition-spinner {
+    width: 40px; height: 40px; border-radius: 50%;
+    border: 3px solid #e2e8f0; border-top-color: #0d9488;
+    animation: authTransitionSpin 0.75s linear infinite;
+  }
+  @keyframes authTransitionSpin { to { transform: rotate(360deg); } }
+  .auth-transition-msg {
+    margin: 0; font-size: 0.9375rem; font-weight: 600; color: #475569; letter-spacing: -0.01em;
+  }
+  .header-logout-btn { margin-left: 0.5rem; padding: 0.45rem 0.85rem; background: #f1f5f9; border: 1px solid #e2e8f0;
+    border-radius: 8px; font-size: 0.75rem; font-weight: 600; color: #475569; cursor: pointer; font-family: inherit; }
+  .header-logout-btn:hover { background: #e2e8f0; color: #0f172a; }
+
   /* ===== PATIENT SELECTOR OVERLAY ===== */
   .patient-selector-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2000;
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); display: flex; align-items: center;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); display: none; align-items: center;
     justify-content: center; animation: fadeIn 0.3s ease; }
   .patient-selector-card { background: #fff; border-radius: 20px; width: 440px; max-width: 92vw;
     box-shadow: 0 24px 80px rgba(0,0,0,0.35); animation: scaleIn 0.3s ease; overflow: hidden; }
@@ -652,10 +798,19 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   .psc-tag.violation-warning { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
   .psc-tag.violation-normal { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
   .psc-tag.drug { background: #faf5ff; color: #7c3aed; border: 1px solid #ddd6fe; }
+  .psc-tag.doctor { background: #ecfdf5; color: #052e16; border: 1px solid #bbf7d0; }
+  .psc-tag.procedure { background: #ecfeff; color: #0e7490; border: 1px solid #a5f3fc; }
+  .psc-tag.facility { background: #f5f3ff; color: #5b21b6; border: 1px solid #ddd6fe; }
+  .psc-tag.appointment { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+  .psc-tag.lab { background: #f0f9ff; color: #0369a1; border: 1px solid #7dd3fc; }
+  .psc-tag.clinical-note { background: #faf8f5; color: #57534e; border: 1px solid #e7e5e4;
+    border-radius: 12px; max-width: 100%; white-space: normal; line-height: 1.35; align-items: flex-start; text-align: left; }
   .psc-none { font-size: 0.75rem; color: #cbd5e1; font-style: italic; }
   .psc-clinical-summary { font-size: 0.8125rem; color: #334155; line-height: 1.55; margin: 0 0 0.625rem;
     padding: 0.5rem 0.625rem; background: linear-gradient(135deg, #f0f9ff 0%, #faf5ff 100%);
     border-left: 3px solid #3b82f6; border-radius: 0 8px 8px 0; font-style: italic; }
+  .psc-violation-block { margin-bottom: 0.4rem; }
+  .psc-violation-reason { font-size: 0.65rem; color: #64748b; margin: 0.2rem 0 0; line-height: 1.4; }
 
   /* ===== INSIGHT PANEL ===== */
   .insight-panel { display: none; }
@@ -745,7 +900,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   .dashboard-main #mynetwork { flex: 1; min-height: 0; height: 100%; background: #ffffff !important; border: none !important; }
 
   /* ===== FILTER BAR ===== */
-  .filter-bar { padding: 0.5rem 1rem; background: #ffffff; border-bottom: 1px solid #e2e8f0;
+  .filter-bar { padding: 0.5rem 1rem 0.5rem 2.5rem; background: #ffffff; border-bottom: 1px solid #e2e8f0;
     display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; font-size: 0.8125rem; }
   .filter-bar label { font-weight: 600; color: #475569; font-size: 0.75rem; margin-right: 0.125rem; }
   .filter-bar select { padding: 0.3rem 0.5rem; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 0.75rem;
@@ -1011,6 +1166,57 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   .sev-badge.normal { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
   .violation-reason { display: block; font-size: 0.6875rem; color: #64748b; margin-top: 0.125rem; line-height: 1.4; font-style: italic; }
 </style>
+<div id="loginOverlay" class="login-overlay">
+  <div class="login-shell">
+    <div class="login-brand">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      <span>Clinical Dashboard</span>
+    </div>
+    <p class="login-tagline">Secure sign-in</p>
+
+    <div id="loginRoleSelection" class="login-role-grid">
+      <button type="button" class="login-role-card clinician" id="loginCardClinician" onclick="selectLoginRole('clinician')" aria-label="Clinician login">
+        <span class="login-role-icon-wrap">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        </span>
+        <span class="login-role-title">Clinician Login</span>
+        <span class="login-role-sub">Admin access</span>
+        <span class="login-role-desc">View and manage patient data</span>
+      </button>
+      <button type="button" class="login-role-card patient" id="loginCardPatient" onclick="selectLoginRole('patient')" aria-label="Patient login">
+        <span class="login-role-icon-wrap">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </span>
+        <span class="login-role-title">Patient Login</span>
+        <span class="login-role-sub">Personal health access</span>
+        <span class="login-role-desc">View your personal health information</span>
+      </button>
+    </div>
+
+    <div id="loginFormPanel" class="login-form-panel" aria-hidden="true">
+      <button type="button" class="login-back" onclick="clearLoginRole()">← Choose access type</button>
+      <h3 id="loginFormTitle">Sign in</h3>
+      <p id="loginFormSubtitle" class="login-form-sub"></p>
+      <div id="loginError" class="login-error"></div>
+      <label id="loginUserLabel" class="login-label" for="loginUser">Username</label>
+      <input type="text" id="loginUser" class="login-field" placeholder="" autocomplete="username">
+      <label id="loginPassLabel" class="login-label" for="loginPass">Password</label>
+      <input type="password" id="loginPass" class="login-field" placeholder="" autocomplete="current-password">
+      <button type="button" id="loginSubmitBtn" class="login-submit" onclick="submitClinicalLogin()">
+        <span class="login-submit-text">Sign in</span>
+        <span class="login-submit-loading">Signing in…</span>
+      </button>
+    </div>
+
+    <p class="login-trust">Your data is encrypted and only accessible to authorized users.</p>
+  </div>
+</div>
+<div id="authTransitionOverlay" class="auth-transition-overlay" style="display:none;" role="status" aria-live="polite" aria-busy="true">
+  <div class="auth-transition-card">
+    <div class="auth-transition-spinner" aria-hidden="true"></div>
+    <p class="auth-transition-msg" id="authTransitionMsg">Please wait…</p>
+  </div>
+</div>
 <div id="patientSelectorOverlay" class="patient-selector-overlay">
   <div class="patient-selector-card">
     <div class="ps-header">
@@ -1036,17 +1242,20 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     </div>
     <div class="ai-search-wrapper">
       <div class="ai-search-box">
-        <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-        <textarea id="aiQuestion" placeholder="Ask AI — click patient nodes for context, e.g. 'What violations does this patient have?'" rows="1"></textarea>
-        <input type="hidden" id="aiApiUrl" value="http://localhost:8000" />
-        <button type="button" id="aiAskBtn" onclick="askAi()">Ask AI</button>
+        <div class="ai-search-main-row">
+          <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <textarea id="aiQuestion" placeholder="Ask AI — click patient nodes for context, e.g. 'What violations does this patient have?'" rows="1"></textarea>
+          <input type="hidden" id="aiApiUrl" value="http://localhost:8000" />
+          <button type="button" id="aiAskBtn" onclick="askAi()">Ask AI</button>
+        </div>
+        <div id="aiLoading" class="ai-loading" style="display:none;" aria-live="polite"><span class="loading-spinner"></span> Analyzing&hellip;</div>
       </div>
-      <div id="aiLoading" class="ai-loading" style="display:none;"><span class="loading-spinner"></span> Analyzing...</div>
     </div>
     <button type="button" class="upload-doc-btn" onclick="openUploadModal()">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
       Upload Document
     </button>
+    <button type="button" id="clinicalLogoutBtn" class="header-logout-btn" style="display:none;" onclick="clinicalLogout()">Log out</button>
   </div>
 </header>
 <div id="aiContextBar" class="ai-context-bar" style="padding:0.25rem 1.5rem;border-bottom:1px solid #e2e8f0;background:#f8fafc;"></div>
@@ -1460,7 +1669,471 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     if (_zoomDetailTimer) clearTimeout(_zoomDetailTimer);
     _zoomDetailTimer = setTimeout(function() { applyZoomProgressiveDetail(sc); }, 100);
   }
+  /** vis-network maps wheel/trackpad scroll to zoom and preventDefault(), so moving over the graph feels like random zoom. Only zoom when Ctrl/Cmd is held; pinch on macOS usually sets ctrlKey. */
+  function restrictWheelZoomUnlessModifier(net) {
+    if (!net || net._wheelZoomModifierPatched) return;
+    try {
+      var ih = net.interactionHandler;
+      if (!ih || !ih.body || !ih.body.eventListeners) return;
+      var orig = ih.body.eventListeners.onMouseWheel;
+      if (typeof orig !== 'function') return;
+      ih.body.eventListeners.onMouseWheel = function(event) {
+        if (!event || event.deltaY === 0) return;
+        if (!event.ctrlKey && !event.metaKey) return;
+        orig(event);
+      };
+      net._wheelZoomModifierPatched = true;
+    } catch (e0) {}
+  }
   function toNodeArray(raw) { return Array.isArray(raw) ? raw : (raw ? Object.keys(raw).map(function(k) { return raw[k]; }) : []); }
+  /* Plain-text node tooltips (native title; aligns with graph_node_tooltips.py — no HTML). */
+  function _plainNz(v) { return v != null && v !== '' ? String(v) : ''; }
+  function plainTooltipPatient(name, pid, age, sex, diseasesJoined, footerLine) {
+    var lines = ['Patient — ' + name, '', 'Primary subject of this clinical graph; other nodes describe care linked to this person.', ''];
+    var ag = _plainNz(age), sx = _plainNz(sex);
+    if (ag) lines.push('Age: ' + ag);
+    if (sx) lines.push('Sex: ' + sx);
+    lines.push('Recorded conditions: ' + (diseasesJoined || '—'));
+    if (pid && pid !== name) lines.push('Patient identifier: ' + pid);
+    if (footerLine) { lines.push(''); lines.push(footerLine); }
+    return lines.join(String.fromCharCode(10));
+  }
+  function plainTooltipDisease(name) {
+    return ['Disease — ' + name, '', 'Condition diagnosed or tracked for this patient; used when comparing treatment to protocol pathways.', ''].join(String.fromCharCode(10));
+  }
+  function plainTooltipSymptom(name) {
+    return ['Symptom — ' + name, '', 'Observed or reported symptom tied to this patient for assessment and documentation.', ''].join(String.fromCharCode(10));
+  }
+  /* Graph data is loaded only from GET /patient-graph/{patient_id} (backend-scoped subgraph). */
+  window._useBackendPatientGraph = true;
+
+  var CLINICAL_SESSION_KEY = 'clinicaldash_session';
+  var CLINICIAN_USER = 'admin';
+  var CLINICIAN_PASS = 'admin';
+  var PATIENT_LOGIN_PASS = 'patient';
+
+  function loadClinicalSession() {
+    try {
+      var raw = sessionStorage.getItem(CLINICAL_SESSION_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e1) { return null; }
+  }
+  function saveClinicalSession(obj) {
+    try { sessionStorage.setItem(CLINICAL_SESSION_KEY, JSON.stringify(obj)); } catch (e2) {}
+  }
+  function clearClinicalSession() {
+    try { sessionStorage.removeItem(CLINICAL_SESSION_KEY); } catch (e3) {}
+  }
+
+  window._loginSelectedRole = null;
+  function resetLoginUI() {
+    window._loginSelectedRole = null;
+    var grid = document.getElementById('loginRoleSelection');
+    var panel = document.getElementById('loginFormPanel');
+    var u = document.getElementById('loginUser');
+    var p = document.getElementById('loginPass');
+    var err = document.getElementById('loginError');
+    if (grid) grid.classList.remove('is-hidden');
+    if (panel) {
+      panel.classList.remove('is-visible');
+      panel.setAttribute('aria-hidden', 'true');
+    }
+    if (u) u.value = '';
+    if (p) p.value = '';
+    if (err) err.textContent = '';
+    setLoginLoading(false);
+    hideAuthTransition();
+  }
+  var AUTH_MIN_UI_MS = 520;
+  function showAuthTransition(message) {
+    var ov = document.getElementById('authTransitionOverlay');
+    var msg = document.getElementById('authTransitionMsg');
+    if (msg) msg.textContent = message || 'Please wait…';
+    if (ov) {
+      ov.style.display = 'flex';
+      window._authTransitionStart = Date.now();
+    }
+  }
+  function hideAuthTransition() {
+    var ov = document.getElementById('authTransitionOverlay');
+    if (ov) ov.style.display = 'none';
+  }
+  function finishAuthTransition() {
+    var t0 = window._authTransitionStart || Date.now();
+    var elapsed = Date.now() - t0;
+    setTimeout(function() {
+      hideAuthTransition();
+      setLoginLoading(false);
+    }, Math.max(0, AUTH_MIN_UI_MS - elapsed));
+  }
+  function selectLoginRole(role) {
+    window._loginSelectedRole = role;
+    var grid = document.getElementById('loginRoleSelection');
+    var panel = document.getElementById('loginFormPanel');
+    var title = document.getElementById('loginFormTitle');
+    var sub = document.getElementById('loginFormSubtitle');
+    var uLab = document.getElementById('loginUserLabel');
+    var pLab = document.getElementById('loginPassLabel');
+    var u = document.getElementById('loginUser');
+    var p = document.getElementById('loginPass');
+    var err = document.getElementById('loginError');
+    if (err) err.textContent = '';
+    if (grid) grid.classList.add('is-hidden');
+    if (role === 'clinician') {
+      if (title) title.textContent = 'Clinician sign in';
+      if (sub) sub.textContent = 'Administrator access to patient records and workflows.';
+      if (uLab) uLab.textContent = 'Username';
+      if (pLab) pLab.textContent = 'Password';
+      if (u) {
+        u.placeholder = 'Username';
+        u.setAttribute('autocomplete', 'username');
+      }
+      if (p) {
+        p.placeholder = 'Password';
+        p.setAttribute('autocomplete', 'current-password');
+      }
+    } else {
+      if (title) title.textContent = 'Patient sign in';
+      if (sub) sub.textContent = 'Enter your assigned Patient ID and access code.';
+      if (uLab) uLab.textContent = 'Patient ID';
+      if (pLab) pLab.textContent = 'Access code';
+      if (u) {
+        u.placeholder = 'e.g. P2';
+        u.setAttribute('autocomplete', 'username');
+      }
+      if (p) {
+        p.placeholder = 'Access code';
+        p.setAttribute('autocomplete', 'current-password');
+      }
+    }
+    if (panel) {
+      panel.classList.add('is-visible');
+      panel.setAttribute('aria-hidden', 'false');
+    }
+    setTimeout(function() {
+      if (u) u.focus();
+    }, 80);
+  }
+  function clearLoginRole() {
+    resetLoginUI();
+  }
+  function setLoginLoading(on) {
+    var btn = document.getElementById('loginSubmitBtn');
+    if (!btn) return;
+    btn.classList.toggle('loading', !!on);
+    btn.disabled = !!on;
+  }
+  window.selectLoginRole = selectLoginRole;
+  window.clearLoginRole = clearLoginRole;
+
+  function applySessionToApp(sess) {
+    if (!sess || !sess.role) {
+      window.currentUser = null;
+      return;
+    }
+    if (sess.role === 'clinician') {
+      window.currentUser = { role: 'clinician', name: sess.userName || 'Clinician' };
+      if (sess.selectedPid) {
+        _patientContext.selected = { pid: sess.selectedPid, name: sess.selectedName || sess.selectedPid, visId: null };
+        _patientContext.selectedMulti = [_patientContext.selected];
+      } else {
+        _patientContext.selected = null;
+        _patientContext.selectedMulti = [];
+      }
+    } else if (sess.role === 'patient' && sess.patientId) {
+      window.currentUser = { role: 'patient', patientId: sess.patientId, name: sess.patientName || sess.patientId };
+      _patientContext.selected = { pid: sess.patientId, name: sess.patientName || sess.patientId, visId: null };
+      _patientContext.selectedMulti = [_patientContext.selected];
+    }
+  }
+  function showLoginOverlay() {
+    resetLoginUI();
+    var lo = document.getElementById('loginOverlay');
+    if (lo) lo.style.display = 'flex';
+    var ps = document.getElementById('patientSelectorOverlay');
+    if (ps) ps.style.display = 'none';
+  }
+  function hideLoginOverlay() {
+    var lo = document.getElementById('loginOverlay');
+    if (lo) lo.style.display = 'none';
+  }
+  function updateLogoutButton() {
+    var btn = document.getElementById('clinicalLogoutBtn');
+    if (btn) btn.style.display = loadClinicalSession() ? 'inline-flex' : 'none';
+  }
+  function clinicalLogout() {
+    showAuthTransition('Signing out…');
+    clearClinicalSession();
+    window.currentUser = null;
+    _patientContext.selected = null;
+    _patientContext.selectedMulti = [];
+    try {
+      var net = getNet();
+      if (net) net.setData({ nodes: new vis.DataSet([]), edges: new vis.DataSet([]) });
+    } catch (e4) {}
+    window._allNodes = [];
+    window._allEdges = [];
+    window._patientsSyncList = [];
+    var lab = document.getElementById('filterLabel');
+    if (lab) lab.textContent = 'Sign in to load data';
+    applyPatientContext();
+    updateLogoutButton();
+    var t0 = window._authTransitionStart || Date.now();
+    var elapsed = Date.now() - t0;
+    setTimeout(function() {
+      hideAuthTransition();
+      showLoginOverlay();
+    }, Math.max(0, AUTH_MIN_UI_MS - elapsed));
+  }
+  window.clinicalLogout = clinicalLogout;
+
+  function initClinicalAuthGate() {
+    var sess = loadClinicalSession();
+    updateLogoutButton();
+    if (!sess || !sess.role) {
+      showLoginOverlay();
+      return;
+    }
+    applySessionToApp(sess);
+    hideLoginOverlay();
+    if (sess.role === 'clinician' && !sess.selectedPid) {
+      var ps = document.getElementById('patientSelectorOverlay');
+      if (ps) ps.style.display = 'flex';
+      syncPatientsFromBackend(function() { _buildPsList(''); });
+      return;
+    }
+    if (sess.role === 'clinician' && sess.selectedPid) {
+      syncPatientsFromBackend(function() { applyPatientContext(); });
+      return;
+    }
+    if (sess.role === 'patient') {
+      syncPatientsFromBackend(function() { applyPatientContext(); });
+    }
+  }
+
+  function submitClinicalLogin() {
+    var role = window._loginSelectedRole;
+    var uEl = document.getElementById('loginUser');
+    var pEl = document.getElementById('loginPass');
+    var errEl = document.getElementById('loginError');
+    var u = (uEl && uEl.value || '').trim();
+    var pw = pEl && pEl.value || '';
+    if (errEl) errEl.textContent = '';
+    if (!role) {
+      if (errEl) errEl.textContent = 'Choose Clinician or Patient access first.';
+      return;
+    }
+    if (role === 'clinician') {
+      if (!u) {
+        if (errEl) errEl.textContent = 'Enter your username.';
+        return;
+      }
+      if (!pw) {
+        if (errEl) errEl.textContent = 'Enter your password.';
+        return;
+      }
+      if (u === CLINICIAN_USER && pw === CLINICIAN_PASS) {
+        setLoginLoading(true);
+        showAuthTransition('Signing in…');
+        saveClinicalSession({ role: 'clinician', userName: 'admin' });
+        applySessionToApp(loadClinicalSession());
+        hideLoginOverlay();
+        updateLogoutButton();
+        var ps = document.getElementById('patientSelectorOverlay');
+        if (ps) ps.style.display = 'flex';
+        syncPatientsFromBackend(function() { _buildPsList(''); });
+        finishAuthTransition();
+      } else {
+        if (errEl) errEl.textContent = 'Invalid username or password.';
+      }
+      return;
+    }
+    if (!u) {
+      if (errEl) errEl.textContent = 'Enter your Patient ID.';
+      return;
+    }
+    if (!pw) {
+      if (errEl) errEl.textContent = 'Enter your access code.';
+      return;
+    }
+    setLoginLoading(true);
+    showAuthTransition('Signing in…');
+    var apiUrl = (document.getElementById('aiApiUrl') && document.getElementById('aiApiUrl').value || 'http://localhost:8000').replace(/\\/$/, '');
+    fetch(apiUrl + '/patients-sync')
+      .then(function(r) { return r.ok ? r.json() : []; })
+      .then(function(list) {
+        window._patientsSyncList = Array.isArray(list) ? list.slice() : [];
+        window._patientSourceById = window._patientSourceById || {};
+        (list || []).forEach(function(p) {
+          if (p.patient_id) window._patientSourceById[p.patient_id] = p.source || null;
+        });
+        var found = null;
+        (list || []).forEach(function(p) {
+          if (p.patient_id && String(p.patient_id).toLowerCase() === u.toLowerCase()) found = p;
+        });
+        if (!found) {
+          if (errEl) {
+            errEl.textContent = 'Patient ID not found. Verify your ID or use Clinician access for staff sign-in.';
+          }
+          finishAuthTransition();
+          return;
+        }
+        if (pw !== PATIENT_LOGIN_PASS) {
+          if (errEl) errEl.textContent = 'Invalid access code.';
+          finishAuthTransition();
+          return;
+        }
+        saveClinicalSession({
+          role: 'patient',
+          patientId: found.patient_id,
+          patientName: found.patient_name || found.patient_id
+        });
+        applySessionToApp(loadClinicalSession());
+        hideLoginOverlay();
+        updateLogoutButton();
+        var pso = document.getElementById('patientSelectorOverlay');
+        if (pso) pso.style.display = 'none';
+        syncPatientsFromBackend(function() { applyPatientContext(); });
+        finishAuthTransition();
+      })
+      .catch(function() {
+        if (errEl) errEl.textContent = 'Cannot reach the server. Check your connection and try again.';
+        finishAuthTransition();
+      });
+  }
+  window.submitClinicalLogin = submitClinicalLogin;
+
+  function getEffectiveIsolationPatientId() {
+    if (typeof _patientContext !== 'undefined' && _patientContext && _patientContext.selected && _patientContext.selected.pid)
+      return _patientContext.selected.pid;
+    if (window.currentUser && window.currentUser.patientId) return window.currentUser.patientId;
+    return null;
+  }
+
+  function applyPatientGraphPayload(data, patientId, doneAfterPaint) {
+    var nodes = data.nodes || [];
+    var rels = data.relationships || [];
+    var sel = patientId || getEffectiveIsolationPatientId();
+    if (sel) {
+      nodes = nodes.filter(function(n) {
+        if (n.node_type === 'Patient' && n.id_prop != null && String(n.id_prop) !== String(sel)) return false;
+        if (n.patientId != null && String(n.patientId) !== String(sel)) return false;
+        if (n.patient_id != null && String(n.patient_id) !== String(sel)) return false;
+        return true;
+      });
+    }
+    window._allNodes = nodes;
+    window._allEdges = rels;
+    var paintCallbackFired = false;
+    function fireDoneOnce() {
+      if (paintCallbackFired) return;
+      paintCallbackFired = true;
+      if (typeof doneAfterPaint === 'function') doneAfterPaint();
+    }
+    function paintIntoNetwork(attempt) {
+      var net = getNet();
+      if (!net) {
+        if (attempt < 80) setTimeout(function() { paintIntoNetwork(attempt + 1); }, 50);
+        else fireDoneOnce();
+        return;
+      }
+      try {
+        net.setData({ nodes: new vis.DataSet(nodes), edges: new vis.DataSet(rels) });
+      } catch (e0) { fireDoneOnce(); return; }
+      populateFilterOptions();
+      try {
+        var pidSync = patientId || getEffectiveIsolationPatientId();
+        if (pidSync && typeof _patientContext !== 'undefined' && _patientContext && _patientContext.selected
+            && String(_patientContext.selected.pid) === String(pidSync)) {
+          for (var vi = 0; vi < nodes.length; vi++) {
+            if (nodes[vi].node_type === 'Patient' && String(nodes[vi].id_prop) === String(pidSync)) {
+              _patientContext.selected.visId = nodes[vi].id;
+              break;
+            }
+          }
+        }
+      } catch(e5) {}
+      try {
+        net.setOptions({
+          nodes: {
+            shape: 'dot',
+            borderWidth: 2,
+            shadow: { enabled: true, size: 12, x: 0, y: 3, color: 'rgba(15,23,42,0.07)' },
+            scaling: { label: { enabled: true, min: 11, max: 20 } },
+            font: { face: 'Inter, system-ui, sans-serif', color: '#1e293b', strokeWidth: 2, strokeColor: 'rgba(255,255,255,0.92)' }
+          },
+          edges: {
+            smooth: { type: 'cubicBezier', forceDirection: 'none', roundness: 0.52 },
+            arrows: { to: { enabled: true, scaleFactor: 0.78 } },
+            width: 1.35,
+            selectionWidth: 2
+          },
+          physics: {
+          enabled: true,
+          solver: 'forceAtlas2Based',
+          forceAtlas2Based: {
+            theta: 0.55,
+            gravitationalConstant: -92,
+            centralGravity: 0.011,
+            springLength: 268,
+            springConstant: 0.058,
+            damping: 0.52,
+            avoidOverlap: 0.82
+          },
+          maxVelocity: 42,
+          minVelocity: 2,
+          timestep: 0.52,
+          stabilization: { enabled: true, iterations: 220, updateInterval: 25 }
+        }
+      });
+      net.once('stabilizationIterationsDone', function() {
+        try { net.setOptions({ physics: { enabled: false } }); } catch(e2) {}
+        try { if (net.fit) net.fit({ animation: { duration: 300 } }); } catch(e3) {}
+      });
+      setTimeout(function() { try { if (net.fit) net.fit({ animation: { duration: 300 } }); } catch(e4) {} }, 400);
+      fireDoneOnce();
+    } catch(e) { fireDoneOnce(); }
+    }
+    paintIntoNetwork(0);
+  }
+
+  function loadPatientGraphFromBackend(patientId, done) {
+    var apiUrl = (document.getElementById('aiApiUrl') && document.getElementById('aiApiUrl').value || 'http://localhost:8000').replace(/\\/$/, '');
+    if (!patientId) {
+      var netEmpty = getNet();
+      if (netEmpty) netEmpty.setData({ nodes: new vis.DataSet([]), edges: new vis.DataSet([]) });
+      window._allNodes = [];
+      window._allEdges = [];
+      if (done) done();
+      return;
+    }
+    fetch(apiUrl + '/patient-graph/' + encodeURIComponent(patientId))
+      .then(function(r) {
+        if (r.ok) return r.json();
+        return r.text().then(function(text) {
+          var detail = '';
+          try {
+            var j = JSON.parse(text);
+            if (j && j.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+          } catch (eJ) { detail = text || ''; }
+          if (r.status === 404 && (detail === 'Not Found' || detail === 'not found')) {
+            throw new Error('The API on this port is missing GET /patient-graph/{id}. Restart: uvicorn api_server:app --port 8000');
+          }
+          if (r.status === 404) throw new Error(detail || 'Patient not found in graph database.');
+          throw new Error(detail || ('Graph request failed (' + r.status + ')'));
+        });
+      })
+      .then(function(data) {
+        applyPatientGraphPayload(data, patientId, done);
+      })
+      .catch(function(err) {
+        console.error('loadPatientGraphFromBackend:', err);
+        var lab = document.getElementById('filterLabel');
+        if (lab) lab.textContent = (err && err.message) ? ('Graph: ' + err.message) : 'Graph load failed';
+        if (done) done();
+      });
+  }
+
   function applyFilter() {
     var net = getNet();
     if (!net || !net.body || !net.body.data) {
@@ -1624,11 +2297,53 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     document.getElementById('filterDisease').value = '';
     document.getElementById('filterCompliance').value = '';
     document.getElementById('filterHospital').value = '';
-    var lab = document.getElementById('filterLabel');
-    if (lab) lab.textContent = 'Showing: All';
     var net = getNet();
     if (!net || !window._allNodes || !window._allEdges) return;
     try { clearEgoHighlight(); } catch (e) {}
+    var scopeIso = getEffectiveIsolationPatientId();
+    var lab = document.getElementById('filterLabel');
+    if (scopeIso) {
+      if (lab) {
+        var vn = (_patientContext && _patientContext.selected && _patientContext.selected.name) ||
+          (window.currentUser && window.currentUser.name) || '';
+        lab.textContent = vn ? ('Viewing: ' + vn) : 'Patient scope';
+      }
+      try {
+        loadPatientGraphFromBackend(scopeIso);
+        var lb = document.getElementById('loadingBar');
+        if (lb) { lb.style.display = 'none'; lb.style.opacity = '0'; }
+        net.setOptions({
+          physics: {
+            enabled: true,
+            solver: 'forceAtlas2Based',
+            forceAtlas2Based: {
+              theta: 0.55,
+              gravitationalConstant: -92,
+              centralGravity: 0.011,
+              springLength: 268,
+              springConstant: 0.058,
+              damping: 0.52,
+              avoidOverlap: 0.82
+            },
+            maxVelocity: 42,
+            minVelocity: 2,
+            timestep: 0.52,
+            stabilization: { enabled: true, iterations: 220, updateInterval: 25 }
+          }
+        });
+        function onStabilizedScoped() {
+          net.off('stabilizationIterationsDone', onStabilizedScoped);
+          try { net.setOptions({ physics: { enabled: false } }); } catch(e) {}
+          try { if (net.fit) net.fit({ animation: { duration: 300 } }); } catch(e) {}
+        }
+        net.once('stabilizationIterationsDone', onStabilizedScoped);
+        setTimeout(function() { try { if (net.fit) net.fit({ animation: { duration: 300 } }); } catch(e) {} }, 500);
+      } catch(err) {
+        console.error('Reset (scoped) error', err);
+      }
+      return;
+    }
+    if (lab) lab.textContent = 'Showing: All';
     try {
       var lb = document.getElementById('loadingBar');
       if (lb) { lb.style.display = 'none'; lb.style.opacity = '0'; }
@@ -1771,6 +2486,8 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   window.clearAiPatients = clearAiPatients;
 
   var lastAiResponse = null;
+  /** 'green' | 'yellow' | 'red' — drives _patientSeverityLanguageLock (calm / monitor-review / contact-soon). */
+  var _aiPatientSeverityTier = 'yellow';
   function askAi() {
     var q = (document.getElementById('aiQuestion') && document.getElementById('aiQuestion').value || '').trim();
     if (!q) {
@@ -1782,7 +2499,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var loadingEl = document.getElementById('aiLoading');
     var btn = document.getElementById('aiAskBtn');
     resultEl.style.display = 'none';
-    loadingEl.style.display = 'block';
+    loadingEl.style.display = 'flex';
     if (btn) btn.disabled = true;
     var payload = { question: q };
     if (_aiSelectedPatients.length) {
@@ -2036,6 +2753,640 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     };
   }
 
+  /** Turn LLM Neo4j path dumps into short clinical labels (no arrow syntax). */
+  function _humanizeEvidenceLine(s) {
+    if (!s || typeof s !== 'string') return s;
+    var t = s.trim().replace(/-&gt;/g, '->');
+    t = t.replace(/\\u2192|\\u2794|\\u279c|\\u27a2|\\u279d/g, '->');
+    t = t.replace(/\\]\\s*-\\s*>/g, ']->');
+    var verbs = {
+      HAS_DISEASE: 'Diagnosis',
+      HAS_SYMPTOM: 'Symptom',
+      HAS_CLINICAL_STATE: 'Clinical severity',
+      HAS_VIOLATION: 'Protocol issue',
+      TREATED_WITH: 'Medication',
+      HAD_PROCEDURE: 'Procedure',
+      VISITS: 'Visit / provider link',
+      HAS_NOTE: 'Clinical note',
+      HAS_APPOINTMENT: 'Appointment',
+      RECOMMENDED_DRUG: 'Guideline medication',
+      RECOMMENDED_PROCEDURE: 'Guideline procedure',
+      FOLLOW_UP: 'Follow-up',
+      ORDERED_LAB: 'Lab order',
+      PRESCRIBED: 'Prescription',
+      INCLUDES_PROCEDURE: 'Encounter procedure'
+    };
+    var pathTail = t.match(/\\[[^\\]:]*:\\s*(\\w+)\\s*\\]\\s*->\\s*\\([^)]*\\)\\s*[—\\-–:]\\s*(.+)$/);
+    if (pathTail) {
+      var rel = pathTail[1];
+      var tail = (pathTail[2] || '').trim();
+      var prefix = verbs[rel] || ('Relationship (' + rel.replace(/_/g, ' ').toLowerCase() + ')');
+      return prefix + ': ' + tail;
+    }
+    var pathOnly = t.match(/\\[[^\\]:]*:\\s*(\\w+)\\s*\\]\\s*->\\s*\\(([^)]*)\\)\\s*$/);
+    if (pathOnly) {
+      var rel2 = pathOnly[1];
+      var nodeBlob = (pathOnly[2] || '').trim();
+      var prefix2 = verbs[rel2] || ('Relationship (' + rel2.replace(/_/g, ' ').toLowerCase() + ')');
+      return prefix2 + ': ' + (nodeBlob || 'graph node');
+    }
+    return t;
+  }
+
+  function _fixArticleEcho(s) {
+    if (!s || typeof s !== 'string') return s;
+    return s.replace(/\\ba\\s+a\\b/g, 'a').replace(/\\ban\\s+an\\b/g, 'an').replace(/\\bthe\\s+the\\b/gi, 'the');
+  }
+
+  /** STEP 2 — strip internal IDs, graph vocabulary, and developer-facing tokens (TASK 2). */
+  function _patientStripSystemLeaks(s) {
+    if (!s || typeof s !== 'string') return '';
+    var t = s.replace(/\\bSECTION_START\\b[\\s\\S]*?\\bSECTION_END\\b/gi, '')
+      .replace(/\\bpatient_id\\s*=\\s*[^\\s,;)]+/gi, '')
+      .replace(/\\b[Pp]atient\\s+P\\d+\\b/g, 'the patient')
+      .replace(/\\s*\\(\\s*P\\d+\\s*\\)/g, '')
+      .replace(/\\s*\\(\\s*[A-Z]\\d+\\s*\\)/g, '')
+      .replace(/\\bP\\d{1,4}\\b/g, '')
+      .replace(/\\bHAS_[A-Z_]+\\b/g, '')
+      .replace(/\\b(TREATED_WITH|HAS_DISEASE|HAS_SYMPTOM|HAS_NOTE|HAS_VIOLATION|HAS_CLINICAL_STATE|ORDERED_LAB|HAD_PROCEDURE|VISITS|HAS_APPOINTMENT|RECOMMENDED_DRUG|RECOMMENDED_PROCEDURE)\\b/g, '')
+      .replace(/\\[:[\\w\\d_:]+\\]/g, '')
+      .replace(/\\[\\s*r\\s*:\\s*[\\w_]+\\s*\\]/gi, '')
+      .replace(/\\bNeo4j\\b/gi, '')
+      .replace(/\\bgraph\\s+database\\b/gi, 'record')
+      .replace(/\\bclinical\\s+graph\\b/gi, 'health record')
+      .replace(/\\bnodes?\\s+and\\s+paths?\\b/gi, 'information in your record');
+    return t.replace(/\\s{2,}/g, ' ').replace(/\\s+,/g, ',').replace(/,\\s*,/g, ',').replace(/\\(\\s*\\)/g, '').trim();
+  }
+
+  /** STEP 3 — replace high-alarm clinical wording with calm, accurate alternatives (TASK 1). */
+  function _patientRiskPhraseNormalize(t) {
+    return (t || '').replace(/\\bhigh\\s+mortality\\b/gi, '')
+      .replace(/\\bmortality\\s+risk\\b/gi, '')
+      .replace(/\\bimminent(ly)?\\s+danger(ous)?\\b/gi, 'needs prompt attention from your care team')
+      .replace(/\\bseptic\\s+shock\\b/gi, 'very low blood pressure related to infection; your care team is monitoring this closely')
+      .replace(/\\bsepsis\\b/gi, 'a serious infection your care team is monitoring closely')
+      .replace(/\\borgans?\\s+failing\\b/gi, 'your body being under significant stress')
+      .replace(/\\bfailing\\s+organs?\\b/gi, 'your body being under significant stress')
+      .replace(/\\borgan\\s+failure\\b/gi, 'your body being under significant stress')
+      .replace(/\\bmultiple\\s+organ\\s+failure\\b/gi, 'your body being under significant stress')
+      .replace(/\\bnecessitating\\s+urgent\\s+medical\\s+evaluation\\s+and\\s+intervention\\b/gi, 'Follow-up with your care team is appropriate')
+      .replace(/\\burgent\\s+intervention\\b/gi, 'close medical attention')
+      .replace(/\\burgent\\s+surgery\\b/gi, 'timely surgery your team will discuss with you')
+      .replace(/\\bimmediate\\s+medical\\s+attention\\s+is\\s+necessary\\b/gi, 'please contact your care team promptly')
+      .replace(/\\bimmediate(?:ly)?\\s+requires\\s+intervention\\b/gi, 'needs close medical attention')
+      .replace(/\\brequires\\s+immediate\\s+intervention\\b/gi, 'needs close medical attention')
+      .replace(/\\blife-?threatening\\b/gi, 'serious — your care team should guide next steps')
+      .replace(/\\bfatal\\b/gi, 'severe')
+      .replace(/\\bdeadly\\b/gi, 'severe')
+      .replace(/\\bcritically\\s+ill\\b/gi, 'seriously unwell')
+      .replace(/\\b(a|an|the)\\s+critical\\s+clinical\\s+state\\b/gi, function(_, art) {
+        return /^the$/i.test(art) ? 'the condition that requires close medical attention' : 'a condition that requires close medical attention';
+      })
+      .replace(/\\b(a|an|the)\\s+critical\\s+state\\b/gi, function(_, art) {
+        return /^the$/i.test(art) ? 'the condition that requires close medical attention' : 'a condition that requires close medical attention';
+      })
+      .replace(/\\bcritical\\s+clinical\\s+state\\b/gi, 'condition that requires close medical attention')
+      .replace(/\\bcritical\\s+state\\b/gi, 'condition that requires close medical attention')
+      .replace(/\\burgent\\s+medical\\s+evaluation\\s+and\\s+intervention\\b/gi, 'follow-up with your care team')
+      .replace(/\\burgent\\s+medical\\s+evaluation\\b/gi, 'timely follow-up with your care team')
+      .replace(/\\bmedical\\s+evaluation\\s+and\\s+intervention\\b/gi, 'review with your care team')
+      .replace(/\\bnecessitating\\s+urgent\\b/gi, 'calling for')
+      .replace(/\\bat risk for a serious infection your care team is monitoring closely\\b/gi, 'needs careful monitoring for infection')
+      .replace(/\\brisk for a serious infection\\b/gi, 'possible infection risk')
+      .replace(/\\bsevere health issues\\b/gi, 'health concerns')
+      .replace(/\\bsignificant concerns\\b/gi, 'several findings your care team is reviewing')
+      .replace(/\\bparticularly concerning\\b/gi, 'worth discussing with your clinician')
+      .replace(/\\bespecially concerning\\b/gi, 'especially important to discuss')
+      .replace(/\\brequires?\\s+immediate\\s+attention\\b/gi, 'needs timely review with your care team')
+      .replace(/\\bimmediate\\s+attention\\b/gi, 'timely review with your care team')
+      .replace(/\\bclinical state shows significant concerns\\b/gi, 'overall picture shows several findings your team is reviewing')
+      .replace(/\\bclinical state metrics\\b/gi, 'overall health picture')
+      .replace(/\\bfacing serious health challenges\\b/gi, 'managing serious health concerns')
+      .replace(/\\bserious health challenges\\b/gi, 'health concerns');
+  }
+
+  /** STEP 4 — remove robotic / system-report phrasing (TASK 3). Long phrases first to avoid “The your record…”. */
+  function _patientRoboticPhraseNormalize(t) {
+    return (t || '')
+      .replace(/\\bthe\\s+evidence\\s+indicates\\b/gi, 'Your record suggests')
+      .replace(/\\bthe\\s+clinical\\s+data\\s+indicates\\b/gi, 'Your health information suggests')
+      .replace(/\\bclinical\\s+data\\s+indicates\\b/gi, 'your health information suggests')
+      .replace(/\\bevidence\\s+indicates\\b/gi, 'your record suggests')
+      .replace(/\\bfindings\\s+confirm\\b/gi, 'your chart is consistent with')
+      .replace(/\\bthe\\s+evidence\\s+suggests\\b/gi, 'your information suggests')
+      .replace(/\\bthe\\s+analysis\\s+shows\\b/gi, 'your records show')
+      .replace(/\\bit\\s+is\\s+evident\\s+that\\b/gi, 'clearly,')
+      .replace(/\\bdemonstrates\\s+that\\b/gi, 'shows that')
+      .replace(/\\bAI\\s+analysis\\b/gi, 'review')
+      .replace(/\\bgraph\\s+reasoning\\b/gi, 'review of your information')
+      .replace(/\\bsystem\\s+output\\b/gi, 'summary');
+  }
+
+  /** Graph / metric wording safe for any section (no raw relational jargon). */
+  function _patientGraphLanguageNormalize(t) {
+    return (t || '')
+      .replace(/\\bas indicated by the relationship to (?:the )?disease\\b/gi, 'as shown in your chart for this condition')
+      .replace(/\\bas indicated by the relationship\\b/gi, 'as shown in your chart')
+      .replace(/\\bindicated by the relationship\\b/gi, 'as noted in your record')
+      .replace(/\\bthe relationship to (?:the )?disease\\b/gi, 'the link to this condition')
+      .replace(/\\brelationship to (?:the )?disease\\b/gi, 'link to this condition')
+      .replace(/\\bclinical state is critical\\b/gi, 'overall picture needs close attention')
+      .replace(/\\bis in a critical state\\b/gi, 'needs close attention')
+      .replace(/\\bwith a SOFA score of \\d+\\b/gi, 'with illness severity scores that suggest close monitoring')
+      .replace(/\\bSOFA score of \\d+\\b/gi, 'illness severity scores that suggest close monitoring')
+      .replace(/\\bSOFA scores?\\b/gi, 'illness severity scores')
+      .replace(/\\bwhich highlights significant organ dysfunction\\b/gi, 'which your care team is reviewing closely')
+      .replace(/\\bsignificant organ dysfunction\\b/gi, 'your body being under significant stress')
+      .replace(/\\borgans?\\s+dysfunction\\b/gi, 'your body being under stress')
+      .replace(/\\borgan dysfunction\\b/gi, 'stress on the body')
+      .replace(/\\bincluding a high illness severity scores\\b/gi, 'including measures that suggest closer monitoring')
+      .replace(/\\bhigh illness severity scores\\b/gi, 'scores that suggest closer monitoring')
+      .replace(/\\band low MAP\\b/gi, 'and blood pressure lower than typical')
+      .replace(/\\blow MAP\\b/gi, 'low blood pressure')
+      .replace(/\\bMAP\\b/g, 'blood pressure');
+  }
+
+  /** Matches 🟢 / 🟡 / 🔴 strip (same branches as _patientStatusIndicatorHtml). */
+  function _computePatientSeverityTier(data, displayConf) {
+    if (data && data.violation) return 'red';
+    var pts = _countMatchingDataPoints(data || {});
+    var level = displayConf && displayConf.level;
+    if (pts > 0 && level === 'high') return 'green';
+    return 'yellow';
+  }
+
+  /** 🟢 Calm vocabulary only — no alarm framing. */
+  function _patientSeverityGreenCalmOnly(t) {
+    return (t || '')
+      .replace(/\\bpanic\\b/gi, 'concern')
+      .replace(/\\bpanicking\\b/gi, 'worrying')
+      .replace(/\\bcrisis\\b/gi, 'situation')
+      .replace(/\\bcatastrophic\\b/gi, 'unusual')
+      .replace(/\\bterrifying\\b/gi, 'difficult')
+      .replace(/\\balarming\\b/gi, 'noteworthy')
+      .replace(/\\burgent\\b/gi, 'routine')
+      .replace(/\\burgently\\b/gi, 'steadily')
+      .replace(/\\bcritical\\b/gi, 'important')
+      .replace(/\\bcritically\\b/gi, 'especially');
+  }
+
+  /** 🟡 Monitor / review framing only — no escalatory clinical hype. */
+  function _patientSeverityYellowMonitorReview(t) {
+    return (t || '')
+      .replace(/\\bserious condition\\b/gi, 'a health issue your care team is monitoring')
+      .replace(/\\bimmediate action\\b/gi, 'next steps with your care team')
+      .replace(/\\bimmediate attention\\b/gi, 'timely review with your care team')
+      .replace(/\\burgently\\b/gi, 'promptly')
+      .replace(/\\burgent\\b/gi, 'timely')
+      .replace(/\\bcritically\\b/gi, 'strongly')
+      .replace(/\\bcritical\\b/gi, 'important');
+  }
+
+  /** 🔴 Contact care team soon — clear but never panic-inducing. */
+  function _patientSeverityRedContactSoon(t) {
+    return (t || '')
+      .replace(/\\bpanic\\b/gi, 'concern')
+      .replace(/\\bpanicking\\b/gi, 'worried')
+      .replace(/\\bdon't panic\\b/gi, 'stay in touch with your care team')
+      .replace(/\\bno need to panic\\b/gi, 'your team can guide next steps')
+      .replace(/\\bterrifying\\b/gi, 'difficult')
+      .replace(/\\bcatastrophic\\b/gi, 'serious')
+      .replace(/\\bimmediately\\b/gi, 'soon')
+      .replace(/\\bimmediate action\\b/gi, 'next steps with your care team')
+      .replace(/\\bimmediate attention\\b/gi, 'prompt attention from your care team')
+      .replace(/\\burgent\\b/gi, 'important')
+      .replace(/\\burgently\\b/gi, 'promptly')
+      .replace(/\\bcritical\\b/gi, 'important')
+      .replace(/\\bcritically\\b/gi, 'especially');
+  }
+
+  /** Severity language lock — runs last on all patient-facing normalized text. */
+  function _patientSeverityLanguageLock(t) {
+    if (!t || typeof t !== 'string') return t;
+    if (_aiPatientSeverityTier === 'green') return _patientSeverityGreenCalmOnly(t);
+    if (_aiPatientSeverityTier === 'yellow') return _patientSeverityYellowMonitorReview(t);
+    if (_aiPatientSeverityTier === 'red') return _patientSeverityRedContactSoon(t);
+    return t;
+  }
+
+  /** Fixes artifacts from chained replacements (grammar / doubled words). */
+  function _patientGrammarCleanup(t) {
+    return (t || '')
+      .replace(/\\b[Tt]he your record suggests\\b/g, 'Your record suggests')
+      .replace(/\\b[Tt]he your health information suggests\\b/gi, 'Your health information suggests')
+      .replace(/\\b[Tt]he your chart is consistent\\b/gi, 'Your chart is consistent')
+      .replace(/\\b[Tt]he your records show\\b/gi, 'Your records show')
+      .replace(/\\b[Tt]he your information suggests\\b/gi, 'Your information suggests')
+      .replace(/\\s*Your clinician can explain what this means for you in everyday terms\\.?/gi, '')
+      .replace(/\\bYou are taking Spirometry\\b/gi, 'Spirometry (a breathing test) appears in your care plan')
+      .replace(/\\*{2,}/g, '')
+      .replace(/^\\s*:\\s+/gm, '')
+      .replace(/\\u2022\\s*:\\s*/g, '\\u2022 ')
+      .replace(/\\s+:\\s+(the|your|a|an)\\b/gi, ' $1')
+      .replace(/\\s+,/g, ',')
+      .replace(/\\s+\\)/g, ')')
+      .replace(/\\(\\s+/g, '(');
+  }
+
+  /**
+   * Patient-safe normalization pipeline: leaks → risk → robotic → graph language → tidy (TASK 4).
+   * Used for Conclusion, Evidence lines, comparison bullets, and as base for Explanation.
+   */
+  function _patientSafeNormalize(s) {
+    if (!s || typeof s !== 'string') return '';
+    var t = _patientStripSystemLeaks(s);
+    t = _patientRiskPhraseNormalize(t);
+    t = _patientRoboticPhraseNormalize(t);
+    t = _patientGraphLanguageNormalize(t);
+    t = t.replace(/\\s{2,}/g, ' ').replace(/^\\s*[.;,\\s]+|\\s+[.;,\\s]+$/g, '').trim();
+    t = _patientGrammarCleanup(t);
+    t = _fixArticleEcho(t);
+    t = _patientSeverityLanguageLock(t);
+    return t;
+  }
+
+  /** Calm wording for patient-facing Evidence — uses full safety pipeline. */
+  function _patientSoftPhrasing(s) {
+    return _patientSafeNormalize(s);
+  }
+
+  /** Softer phrasing for the Conclusion card (structure unchanged). */
+  function _patientConclusionTone(s) {
+    return _patientSafeNormalize(s);
+  }
+
+  /** Strip IDs / graph tokens for patient view without rewriting clinical substance (Explanation only). */
+  function _patientExplanationLight(s) {
+    if (!s || typeof s !== 'string') return s;
+    var t = _patientStripSystemLeaks(s);
+    t = t.replace(/\\s{2,}/g, ' ').replace(/^\\s*[.;,\\s]+|\\s+[.;,\\s]+$/g, '').trim();
+    t = _patientGrammarCleanup(t);
+    return _fixArticleEcho(t);
+  }
+
+  /** Explanation: keep direct, specific wording from the model; only strip system leaks and soften “critical” in calm tiers. */
+  function _patientExplanationTone(s) {
+    if (!s || typeof s !== 'string') return s;
+    var t = _patientExplanationLight(s);
+    if (_aiPatientSeverityTier === 'green') {
+      t = t.replace(/\\bcritical\\b/gi, 'serious').replace(/\\bseriously seriously\\b/gi, 'seriously');
+    } else if (_aiPatientSeverityTier === 'red') {
+      t = t.replace(/\\bcritical\\b/gi, 'important').replace(/\\bseriously seriously\\b/gi, 'especially');
+    }
+    t = t.replace(/\\bat risk for a serious infection your care team is monitoring closely\\b/gi, 'possible infection concern noted in your chart')
+      .replace(/\\ba serious infection your care team is monitoring closely\\b/gi, 'possible infection concerns in your chart');
+    t = _patientGrammarCleanup(t.replace(/\\s{2,}/g, ' ').trim());
+    return _fixArticleEcho(t);
+  }
+
+  /** 🟢 / 🟡 / 🔴 subtle status for patient UX (TASK 5 — calm copy only). */
+  function _patientStatusIndicatorHtml(data, displayConf, parsed) {
+    var pts = _countMatchingDataPoints(data || {});
+    var level = displayConf && displayConf.level;
+    var violation = data && data.violation;
+    var emoji, title, sub, cls;
+    if (violation) {
+      cls = 'ai-patient-status ai-ps-contact';
+      emoji = '\\uD83D\\uDD34';
+      title = 'Contact your care team soon';
+      sub = 'Share this summary with your clinician to plan next steps — a steady, straightforward check-in.';
+    } else if (pts === 0) {
+      cls = 'ai-patient-status ai-ps-attention';
+      emoji = '\\uD83D\\uDFE1';
+      title = 'Monitor or review';
+      sub = 'Add a patient or context so this view can better match your record — language stays in review-only mode.';
+    } else if (level === 'high') {
+      cls = 'ai-patient-status ai-ps-stable';
+      emoji = '\\uD83D\\uDFE2';
+      title = 'Calm overview';
+      sub = 'This answer uses a calm, everyday tone for what is available for this question.';
+    } else {
+      cls = 'ai-patient-status ai-ps-attention';
+      emoji = '\\uD83D\\uDFE1';
+      title = 'Monitor or review';
+      sub = 'Some values are outside the usual range — worth a routine look with your care team when you are ready.';
+    }
+    return '<div class="' + cls + '" role="status"><span class="ai-ps-emoji" aria-hidden="true">' + emoji + '</span><span class="ai-ps-copy"><span class="ai-ps-title">' + _escHtml(title) + '</span><span class="ai-ps-sub">' + _escHtml(sub) + '</span></span></div>';
+  }
+
+  function _stripCodesTail(tail) {
+    return (tail || '').replace(/\\([A-Z]\\d{2}(?:\\.\\d+)?\\)/g, '').replace(/\\([Ee]\\d{2}\\)/g, '')
+      .replace(/\\s+/g, ' ').trim();
+  }
+
+  function _friendlyVitalsNarrative(tail) {
+    var out = [];
+    var sofaM = /SOFA\\s*=\\s*(\\d+)/i.exec(tail);
+    var mapM = /MAP\\s*=\\s*([\\d.]+)/i.exec(tail);
+    var lacM = /lactate\\s*=\\s*([\\d.]+)/i.exec(tail);
+    var sofaN = sofaM ? parseInt(sofaM[1], 10) : null;
+    var mapN = mapM ? parseFloat(mapM[1]) : null;
+    var lacN = lacM ? parseFloat(lacM[1]) : null;
+    if (sofaN != null && !isNaN(sofaN)) {
+      if (sofaN >= 6) {
+        out.push('Some of your results suggest your body is under stress and should be monitored closely.');
+      } else if (sofaN >= 2) {
+        out.push('Some measures in your record help your care team track how you are doing.');
+      }
+    }
+    if (mapN != null && !isNaN(mapN) && mapN < 65) {
+      out.push('Your blood pressure is lower than usual.');
+    }
+    if (lacN != null && !isNaN(lacN) && lacN > 2) {
+      out.push('Some lab results are outside the normal range, which your care team is reviewing.');
+    }
+    if (!out.length && (tail || '').trim()) {
+      out.push('Your care team is reviewing how you are doing overall.');
+    }
+    return out.slice(0, 3);
+  }
+
+  function _friendlyDiagnosisTail(tail) {
+    var t = _stripCodesTail((tail || '').replace(/\\s*Your clinician can explain what this means for you in everyday terms\\.?/gi, '').trim());
+    var lower = t.toLowerCase();
+    if (lower.indexOf('type 2 diabetes') >= 0 || lower.indexOf('type 2 diabetes mellitus') >= 0) {
+      return ['You have Type 2 Diabetes, a condition that affects how your body controls blood sugar.'];
+    }
+    if (/\\bdiabetes\\b/i.test(t)) {
+      return ['You have diabetes, which affects how your body controls blood sugar.'];
+    }
+    if (/\\bcopd\\b/i.test(lower) || lower.indexOf('chronic obstructive pulmonary') >= 0) {
+      return ['You have COPD, a long-term lung condition where the airways become inflamed and narrowed, which can make you feel short of breath. Treatment often focuses on inhalers, staying active as you are able, vaccines your team recommends, and breathing tests such as spirometry to track lung function.'];
+    }
+    if (/\\bhypertension\\b|high blood pressure/i.test(t)) {
+      return ['You have high blood pressure (hypertension), meaning the force of blood against your artery walls stays higher than ideal over time, which your care team helps you manage with lifestyle steps and sometimes medication.'];
+    }
+    if (/\\basthma\\b/i.test(lower)) {
+      return ['You have asthma, a condition where the airways can tighten and swell and produce extra mucus, which can cause wheezing or shortness of breath; care often includes trigger avoidance and inhaler plans.'];
+    }
+    if (!t) return ['Your chart lists a condition your care team is managing.'];
+    if (/\\byou have\\s+copd\\b/i.test(t)) {
+      return ['You have COPD, a long-term lung condition where the airways become inflamed and narrowed, which can make you feel short of breath. Treatment often focuses on inhalers, staying active as you are able, vaccines your team recommends, and breathing tests such as spirometry to track lung function.'];
+    }
+    return ['You have ' + t + '. In everyday terms, this is a health condition your care team monitors and treats with a plan that fits you.'];
+  }
+
+  function _friendlySymptomTail(tail) {
+    var t = _patientSoftPhrasing(_stripCodesTail(tail));
+    if (!t) return ['Your team is aware of symptoms noted in your record.'];
+    return ['Your care team is keeping an eye on: ' + t + '.'];
+  }
+
+  function _looksLikeLabOrTest(tail) {
+    var u = (tail || '').toLowerCase();
+    return /\\b(hba1c|a1c|hemoglobin|lipid|cbc|cmp|metabolic panel|lab panel|blood test|urine test|screening test)\\b/i.test(u)
+      || /^\\s*lab\\s+order/i.test(u);
+  }
+
+  function _looksLikeProcedureOrImagingName(name) {
+    var u = (name || '').toLowerCase();
+    return /spirometry|pulmonary function|\\bpft\\b|x-ray|chest radiograph|ct scan|computed tomography|\\bmri\\b|ultrasound|echocardiogram|\\bekg\\b|\\becg\\b|stress test|colonoscopy|endoscopy|biopsy|mammogram|pap smear|bone density|dexa|holter/i.test(u);
+  }
+
+  function _friendlyLabTestLines(tail) {
+    var u = (tail || '').toLowerCase();
+    if (/hba1c|hemoglobin\\s*a1c|\\ba1c\\b/i.test(u)) {
+      return ['You have had an HbA1c test, which helps measure your average blood sugar over time.'];
+    }
+    var shorty = (tail || '').split(/[;,]/)[0].trim();
+    if (!shorty) return ['Your care team ordered lab tests to help monitor your health.'];
+    return ['You have had a lab test related to ' + shorty + ', which helps your team monitor your health.'];
+  }
+
+  /** Single patient-friendly line for meds (no repeated “guidelines” lines here). */
+  function _friendlyMedicationLines(tail) {
+    if (_looksLikeLabOrTest(tail)) return _friendlyLabTestLines(tail);
+    var raw = (tail || '').trim().replace(/^drug:\\s*/i, '');
+    if (!raw) return ['Your chart lists a medicine your care team monitors.'];
+    var segments = raw.split(/[,;]/).map(function (p) { return p.trim(); }).filter(Boolean);
+    var out = [];
+    segments.forEach(function (seg) {
+      var t = seg.trim();
+      if (!t) return;
+      if (_looksLikeProcedureOrImagingName(t) || _looksLikeProcedureOrImagingName(seg)) {
+        if (/spirometry/i.test(t)) {
+          out.push('Spirometry is a breathing test that measures how much air you move and how quickly; it helps monitor conditions like COPD or asthma. Your care record notes it as part of your plan.');
+        } else {
+          out.push(t.charAt(0).toUpperCase() + t.slice(1) + ' is a test or procedure in your care plan (not a daily medicine).');
+        }
+      } else if (/metformin/i.test(seg)) {
+        out.push('You are taking Metformin, a common medication that helps control blood sugar levels.');
+      } else {
+        out.push('You are taking ' + t + ', as shown in your care record.');
+      }
+    });
+    return out.length ? out : ['Your chart lists a medicine your care team monitors.'];
+  }
+
+  function _friendlyProtocolExpectation(tail) {
+    if (_looksLikeLabOrTest(tail)) return _friendlyLabTestLines(tail);
+    return _friendlyMedicationLines(tail);
+  }
+
+  function _friendlyDocumentationActual(tail) {
+    if (_looksLikeLabOrTest(tail)) return _friendlyLabTestLines(tail);
+    return _friendlyMedicationLines(tail);
+  }
+
+  function _friendlyProcedureTail(tail) {
+    var t = _stripCodesTail(tail);
+    if (!t) return ['Your care record includes a test or procedure step your team uses to monitor your health.'];
+    if (/spirometry/i.test(t)) {
+      return ['Your care includes spirometry — a breathing test that shows how well your lungs move air.'];
+    }
+    return ['Your care includes ' + t + ' — a test or procedure step noted in your record.'];
+  }
+
+  function _friendlyClinicalNoteTail(tail) {
+    var raw = _patientSoftPhrasing(tail);
+    if (/hba1c|hemoglobin\\s*a1c|\\ba1c\\b/i.test(raw)) {
+      var lines = ['Your blood sugar levels are being monitored.'];
+      if (/adherence|regularly|taking\\s+your|metformin/i.test(raw)) {
+        lines.push('Your doctor may review how regularly you take your medication to help improve control.');
+      }
+      return lines.slice(0, 2);
+    }
+    if (!raw) return ['There is a note in your chart your care team may refer to.'];
+    return [raw.charAt(0).toUpperCase() + raw.slice(1) + '.'];
+  }
+
+  function _dedupeEvidenceLines(lines) {
+    var seen = {};
+    var out = [];
+    (lines || []).forEach(function(line) {
+      var k = String(line).toLowerCase().replace(/\\s+/g, ' ').trim();
+      if (!k || seen[k]) return;
+      seen[k] = true;
+      out.push(line);
+    });
+    return out;
+  }
+
+  function _treatmentGuidelineNoiseRe() {
+    return /\\b(this follows usual guidance|this matches common medical|standard medical guidelines when|follows standard medical guidelines|usual guidance for many people)\\b/i;
+  }
+
+  function _stripTreatmentFluff(lines) {
+    return (lines || []).filter(function(l) { return !_treatmentGuidelineNoiseRe().test(l); });
+  }
+
+  function _sortTreatmentForReadability(lines) {
+    var closing = null;
+    var rest = [];
+    (lines || []).forEach(function(l) {
+      if (/^These steps (are part of standard care|reflect usual care)/i.test(l)) closing = l;
+      else rest.push(l);
+    });
+    rest.sort(function(a, b) {
+      function rank(x) {
+        if (/^You are taking /i.test(x)) return 0;
+        if (/had an|HbA1c test|lab test|breathing test|is a test or procedure/i.test(x)) return 1;
+        return 2;
+      }
+      return rank(a) - rank(b);
+    });
+    if (closing) rest.push(closing);
+    return rest;
+  }
+
+  function _capLinesKeepClosing(lines, max) {
+    max = max || 3;
+    if (!lines || lines.length <= max) return lines || [];
+    var closing = null;
+    var body = lines.filter(function(l) {
+      if (/^These steps /i.test(l)) { closing = l; return false; }
+      return true;
+    });
+    var head = body.slice(0, closing ? max - 1 : max);
+    if (closing && head.length < max) head.push(closing);
+    return head;
+  }
+
+  function _finalizeTreatmentLines(lines, conditionLines) {
+    var cond = (conditionLines || []).join(' ').toLowerCase();
+    var blob = (lines || []).join(' ').toLowerCase();
+    var diabetes = cond.indexOf('diabetes') >= 0 || blob.indexOf('diabetes') >= 0 || blob.indexOf('metformin') >= 0 || blob.indexOf('blood sugar') >= 0;
+    var scrubbed = _stripTreatmentFluff(lines);
+    scrubbed = scrubbed.map(function(line) {
+      if (/\\bYou are taking\\s+.+\\b(hba1c|a1c)\\b/i.test(line)) {
+        return 'You have had an HbA1c test, which helps measure your average blood sugar over time.';
+      }
+      if (/\\bYou are taking\\s+spirometry\\b/i.test(line)) {
+        return 'Spirometry is a breathing test that measures how much air you move and how quickly; it helps monitor conditions like COPD or asthma. Your care record notes it as part of your plan.';
+      }
+      return line;
+    });
+    scrubbed = _dedupeEvidenceLines(scrubbed);
+    var already = scrubbed.some(function(l) { return /^These steps /i.test(l) || /\\bstandard care for managing\\b|\\busual care tailored\\b/i.test(l); });
+    if (scrubbed.length && !already) {
+      if (diabetes) scrubbed.push('These steps are part of standard care for managing Type 2 Diabetes.');
+      else scrubbed.push('These steps reflect usual care tailored to you.');
+    }
+    scrubbed = _sortTreatmentForReadability(scrubbed);
+    return _capLinesKeepClosing(scrubbed, 3);
+  }
+
+  /**
+   * Maps one evidence source line to patient-friendly category + short lines (no raw graph dumps).
+   */
+  function _patientFriendlyEvidenceTransform(raw) {
+    var h = _patientSafeNormalize(_humanizeEvidenceLine(raw));
+    var s = h;
+    var colon = s.indexOf(':');
+    var prefix = colon >= 0 ? s.slice(0, colon).trim() : '';
+    var tail = colon >= 0 ? s.slice(colon + 1).trim() : s;
+    var pfx = prefix.trim().toLowerCase();
+
+    if (/^retrieved context includes/i.test(s)) {
+      return { category: 'general', lines: ['Your chart includes information from several places that relate to this question.'] };
+    }
+    if (/no discrete graph-backed/i.test(s) || /no structured evidence lines/i.test(s)) {
+      return { category: 'general', lines: ['The overview draws on the written summary when separate bullet points were not listed.'] };
+    }
+
+    if (pfx === 'clinical severity') {
+      return { category: 'state', lines: _friendlyVitalsNarrative(tail) };
+    }
+    if (pfx === 'diagnosis') {
+      return { category: 'condition', lines: _friendlyDiagnosisTail(tail) };
+    }
+    if (pfx === 'symptom') {
+      return { category: 'state', lines: _friendlySymptomTail(tail) };
+    }
+    if (pfx === 'medication') {
+      return { category: 'treatment', lines: _friendlyMedicationLines(tail) };
+    }
+    if (pfx === 'protocol expectation') {
+      return { category: 'treatment', lines: _friendlyProtocolExpectation(tail) };
+    }
+    if (pfx === 'documentation / actual') {
+      return { category: 'treatment', lines: _friendlyDocumentationActual(tail) };
+    }
+    if (pfx === 'clinical note') {
+      return { category: 'notes', lines: _friendlyClinicalNoteTail(tail) };
+    }
+    if (pfx === 'procedure' || pfx === 'guideline procedure' || pfx === 'encounter procedure') {
+      return { category: 'treatment', lines: _friendlyProcedureTail(tail) };
+    }
+    if (pfx === 'protocol issue') {
+      return { category: 'general', lines: ['Your care team may review how your care lines up with recommended steps — this is a routine part of safe care.'] };
+    }
+    if (pfx === 'lab order') {
+      return { category: 'treatment', lines: _friendlyLabTestLines(tail) };
+    }
+    if (pfx === 'guideline medication' || pfx === 'prescription') {
+      return { category: 'treatment', lines: _friendlyMedicationLines(tail) };
+    }
+    if (pfx === 'visit / provider link' || pfx === 'appointment' || pfx === 'follow-up') {
+      return { category: 'general', lines: ['Your recent care includes a visit or follow-up related to this topic.'] };
+    }
+    if (prefix.indexOf('Relationship') === 0 || pfx.indexOf('relationship') === 0) {
+      return { category: 'general', lines: [_patientSoftPhrasing(tail) || s] };
+    }
+    return { category: 'general', lines: [_patientSoftPhrasing(s) || s] };
+  }
+
+  function buildPatientFriendlyEvidenceHtml(evidenceList) {
+    var grouped = { condition: [], state: [], treatment: [], notes: [], general: [] };
+    (evidenceList || []).forEach(function(raw) {
+      var item = _patientFriendlyEvidenceTransform(raw);
+      (item.lines || []).forEach(function(line) {
+        var cleaned = _patientSoftPhrasing(line);
+        if (cleaned) grouped[item.category].push(cleaned);
+      });
+    });
+    ['condition', 'notes', 'general'].forEach(function(k) {
+      grouped[k] = _dedupeEvidenceLines(grouped[k]);
+    });
+    grouped.state = _dedupeEvidenceLines(grouped.state).slice(0, 3);
+    grouped.condition = grouped.condition.slice(0, 3);
+    grouped.notes = grouped.notes.slice(0, 3);
+    grouped.general = grouped.general.slice(0, 2);
+    grouped.treatment = _finalizeTreatmentLines(grouped.treatment, grouped.condition);
+    var blocks = [
+      ['condition', 'Condition'],
+      ['state', 'Your Current State'],
+      ['treatment', 'Treatment'],
+      ['notes', 'Doctor\\'s Notes'],
+      ['general', 'Other information']
+    ];
+    var html = '<div class="ai-evidence-patient-wrap">';
+    blocks.forEach(function(b) {
+      var key = b[0], label = b[1];
+      var lines = grouped[key];
+      if (!lines.length) return;
+      html += '<div class="ai-evidence-group">';
+      html += '<div class="ai-evidence-group-label">' + _escHtml(label) + '</div>';
+      html += '<ul class="ai-evidence ai-evidence-sub">';
+      lines.forEach(function(line) {
+        html += '<li>' + _mdInline(_escHtml(line)) + '</li>';
+      });
+      html += '</ul></div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
   function _buildEvidenceList(parsed, data) {
     var ev = parsed.evidence.slice();
     var seen = {};
@@ -2062,21 +3413,32 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   }
 
   function buildStructuredAiHtml(rawText, data) {
-    var parsed = _parseStructured(_escHtml(rawText || ''));
+    var parsed = _parseStructured(rawText || '');
     var dataPoints = _countMatchingDataPoints(data);
     var conf = _computeConfidence(data);
     var displayConf = dataPoints === 0 ? { level: 'low', label: 'Low', score: 0 } : conf;
+    _aiPatientSeverityTier = _computePatientSeverityTier(data, displayConf);
     var evidenceList = _buildEvidenceList(parsed, data);
     var explanationText = parsed.explanation && parsed.explanation.trim();
     if (!explanationText) {
-      explanationText = 'Interpretation synthesizes the conclusion and evidence above in line with standard clinical documentation review.';
+      if (data && data.violation) {
+        var miss = [];
+        (data.protocol_expected || []).forEach(function(x) { if (x) miss.push(String(x)); });
+        var hint = miss.length ? (' Recommended care in your chart may include: ' + miss.slice(0, 4).join('; ') + '.') : '';
+        explanationText = 'Your record suggests there are gaps between recommended care and what appears documented for you.' + hint + ' The bullets above list what was expected versus what appears in the record; your care team can confirm which steps apply in your situation.';
+      } else {
+        explanationText = 'This section ties together what appears above: diagnoses, treatments, and tests in your record, in plain language.';
+      }
     }
+    explanationText = _escHtml(_patientExplanationTone(explanationText));
 
     var multiPatient = data.selected_patients && data.selected_patients.length > 1;
     var isComp = multiPatient || _isComparisonResponse(rawText || '')
       || parsed.commonFindings.length || parsed.differences.length;
 
-    var conclusionBody = parsed.conclusion || (rawText ? _escHtml(rawText).replace(/\\n/g, ' ').trim().substring(0, 800) : '');
+    var conclusionBody = parsed.conclusion
+      ? _escHtml(_patientConclusionTone(parsed.conclusion))
+      : (rawText ? _escHtml(_patientConclusionTone(rawText)).replace(/\\n/g, ' ').trim().substring(0, 800) : '');
     if (!conclusionBody) conclusionBody = 'No narrative conclusion was returned.';
 
     var html = '<div class="ai-structured ai-clinical-response">';
@@ -2089,9 +3451,10 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     }
 
     html += '<div class="ai-response-card">';
-    html += '<div class="ai-section-label"><span class="section-icon">\\u2192</span> Conclusion';
+    html += '<div class="ai-section-label">Conclusion';
     html += '<span class="ai-confidence ' + displayConf.level + '"><span class="conf-dot"></span>' + displayConf.label + '</span>';
     html += '</div>';
+    html += _patientStatusIndicatorHtml(data, displayConf, parsed);
     html += '<div class="ai-section"><div class="ai-conclusion">' + _mdInline(conclusionBody) + '</div></div>';
     html += '</div>';
 
@@ -2101,14 +3464,14 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       html += '<div class="ai-comparison-grid">';
       html += '<div class="ai-comparison-col common"><h6>Common Findings</h6>';
       if (parsed.commonFindings.length) {
-        parsed.commonFindings.forEach(function(f) { html += '&bull; ' + _mdInline(f) + '<br>'; });
+        parsed.commonFindings.forEach(function(f) { html += '&bull; ' + _mdInline(_escHtml(_patientSafeNormalize(f))) + '<br>'; });
       } else {
         html += '<span class="ai-placeholder">None parsed from the reply' + (multiPatient ? '; see conclusion and explanation.' : '.') + '</span>';
       }
       html += '</div>';
       html += '<div class="ai-comparison-col diff"><h6>Differences</h6>';
       if (parsed.differences.length) {
-        parsed.differences.forEach(function(f) { html += '&bull; ' + _mdInline(f) + '<br>'; });
+        parsed.differences.forEach(function(f) { html += '&bull; ' + _mdInline(_escHtml(_patientSafeNormalize(f))) + '<br>'; });
       } else {
         html += '<span class="ai-placeholder">None parsed from the reply' + (multiPatient ? '; see conclusion and explanation.' : '.') + '</span>';
       }
@@ -2117,9 +3480,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
 
     html += '<div class="ai-response-card">';
     html += '<div class="ai-section-label"><span class="section-icon">\\u2022</span> Evidence</div>';
-    html += '<div class="ai-section"><ul class="ai-evidence">';
-    evidenceList.forEach(function(e) { html += '<li>' + _mdInline(e) + '</li>'; });
-    html += '</ul></div></div>';
+    html += '<div class="ai-section">' + buildPatientFriendlyEvidenceHtml(evidenceList) + '</div></div>';
 
     html += '<div class="ai-response-card">';
     html += '<div class="ai-section-label"><span class="section-icon">\\u24d8</span> Explanation</div>';
@@ -2252,9 +3613,11 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var shouldRestore = _aiHighlightActive || fullSnap;
     if (!shouldRestore) return;
 
-    if (fullSnap && fullSnap.nodes && fullSnap.edges) {
+    if (fullSnap && fullSnap.nodes && fullSnap.edges && !getEffectiveIsolationPatientId()) {
       window._allNodes = JSON.parse(JSON.stringify(fullSnap.nodes));
       window._allEdges = JSON.parse(JSON.stringify(fullSnap.edges));
+      window._aiGraphSnapshotBeforeHighlight = null;
+    } else {
       window._aiGraphSnapshotBeforeHighlight = null;
     }
 
@@ -2265,7 +3628,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     } catch(e) { console.error('clearAiHighlight filterGraphToPatient:', e); }
 
     try {
-      if (!_patientContext || !_patientContext.selected) {
+      if (!getEffectiveIsolationPatientId() && (!_patientContext || !_patientContext.selected)) {
         document.getElementById('filterLabel').textContent = 'Showing: All';
       }
     } catch(e2) {}
@@ -2422,7 +3785,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     nodes.add({
       id: nodeId, label: pName,
       color: { background: '#22d3ee', border: '#0891b2', highlight: { background: '#22d3ee', border: '#0891b2' } },
-      title: '<b>Patient: ' + pName + '</b><br>Source: Document upload',
+      title: plainTooltipPatient(pName, pid, '', '', '—', 'Created from document upload; matches Neo4j after sync.'),
       id_prop: pid, node_type: 'Patient', size: 30, borderWidth: 3,
       shadow: { enabled: true, size: 15, color: 'rgba(34,211,238,0.4)' },
       font: { size: 14, color: '#0f172a' }
@@ -2430,7 +3793,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     (patient.symptoms || []).forEach(function(s, i) {
       var sId = 'up_sym_' + i + '_' + pid;
       nodes.add({ id: sId, label: s, color: '#f472b6',
-        title: '<b>Symptom: ' + s + '</b>', node_type: 'Symptom', size: 16 });
+        title: plainTooltipSymptom(s), node_type: 'Symptom', size: 16 });
       edges.add({ from: nodeId, to: sId, label: 'HAS_SYMPTOM', color: '#f472b6' });
     });
     (patient.diseases || []).forEach(function(d, i) {
@@ -2446,7 +3809,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       } else {
         var dId = 'up_dis_' + i + '_' + pid;
         nodes.add({ id: dId, label: d, color: '#ef4444',
-          title: '<b>Disease: ' + d + '</b>', node_type: 'Disease', size: 18 });
+          title: plainTooltipDisease(d), node_type: 'Disease', size: 18 });
         edges.add({ from: nodeId, to: dId, label: 'HAS_DISEASE', color: '#10b981' });
       }
     });
@@ -2466,17 +3829,39 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   }
   /* ===== Backend sync: keep graph + filters in sync with Neo4j ===== */
   function syncPatientsFromBackend(callback) {
+    if (!loadClinicalSession()) {
+      if (callback) callback();
+      return;
+    }
     var apiUrl = (document.getElementById('aiApiUrl') && document.getElementById('aiApiUrl').value || 'http://localhost:8000').replace(/\\/$/, '');
     var net = getNet();
-    if (!net || !net.body || !net.body.data) { if (callback) callback(); return; }
+    if (!net || !net.body || !net.body.data) {
+      if (window._useBackendPatientGraph) {
+        var effEarly = getEffectiveIsolationPatientId();
+        if (effEarly) {
+          loadPatientGraphFromBackend(effEarly, callback);
+          return;
+        }
+      }
+      if (callback) callback();
+      return;
+    }
+    var graphCbHandled = false;
     fetch(apiUrl + '/patients-sync')
       .then(function(r) { return r.ok ? r.json() : []; })
       .then(function(patients) {
-        if (!patients) return;
+        if (!patients) patients = [];
+        window._patientsSyncList = Array.isArray(patients) ? patients.slice() : [];
         window._patientSourceById = window._patientSourceById || {};
         patients.forEach(function(p) {
           if (p.patient_id) window._patientSourceById[p.patient_id] = p.source || null;
         });
+        if (window._useBackendPatientGraph) {
+          var effPid = getEffectiveIsolationPatientId();
+          graphCbHandled = true;
+          loadPatientGraphFromBackend(effPid, callback);
+          return;
+        }
         var nodes = net.body.data.nodes;
         var edges = net.body.data.edges;
         var allN = toNodeArray(nodes.get());
@@ -2535,10 +3920,8 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
           changed = true;
           var nodeId = 'sync_' + pid;
           var age = p.age; var sex = p.sex;
-          var title = '<b>Patient: ' + (p.patient_name || pid) + '</b>';
-          if (age || sex) title += '<br>Age: ' + (age || '\u2014') + ' | Sex: ' + (sex || '\u2014');
           var dNames = (p.diseases || []).map(function(d) { return d.name; }).filter(Boolean);
-          if (dNames.length) title += '<br>Diseases: ' + dNames.join(', ');
+          var title = plainTooltipPatient(p.patient_name || pid, pid, age, sex, dNames.length ? dNames.join(', ') : '—', null);
           nodes.add({
             id: nodeId, label: p.patient_name || pid,
             color: '#3b82f6', title: title,
@@ -2553,7 +3936,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
             if (!target) {
               target = 'sync_d_' + d.id;
               nodes.add({ id: target, label: d.name || d.id, color: '#ef4444',
-                title: '<b>Disease: ' + (d.name || d.id) + '</b>',
+                title: plainTooltipDisease(d.name || d.id),
                 id_prop: d.id, node_type: 'Disease', size: 18 });
               existingDiseases[d.id] = target;
             }
@@ -2565,7 +3948,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
             if (!target) {
               target = 'sync_s_' + s.id;
               nodes.add({ id: target, label: s.name || s.id, color: '#f472b6',
-                title: '<b>Symptom: ' + (s.name || s.id) + '</b>',
+                title: plainTooltipSymptom(s.name || s.id),
                 id_prop: s.id, node_type: 'Symptom', size: 16 });
               existingSymptoms[s.id] = target;
             }
@@ -2593,7 +3976,9 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
         }
       })
       .catch(function(err) { console.log('Patient sync skipped:', err.message); })
-      .finally(function() { if (callback) callback(); });
+      .finally(function() {
+        if (!graphCbHandled && callback) callback();
+      });
   }
   /* ---- Compare Patients ---- */
   var _compareOriginalNodes = null;
@@ -2606,8 +3991,14 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   }
 
   function openCompareModal() {
-    var allN = window._allNodes || [];
-    var pts = allN.filter(function(n) { return n.node_type === 'Patient'; });
+    var pts = _getAllPatientNodes().map(function(entry) {
+      return {
+        id_prop: entry.pid,
+        label: entry.name,
+        id: entry.visId,
+        patient_source: entry.patient_source
+      };
+    });
     pts.sort(function(a, b) { return (a.label || '').localeCompare(b.label || ''); });
     var preSelected = {};
     if (_patientContext.selected) preSelected[_patientContext.selected.pid] = true;
@@ -2737,10 +4128,17 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
 
     var patientIdProps = {};
     (data.patients || []).forEach(function(p) { patientIdProps[p.patient_id] = true; });
+    var isolationCmp = getEffectiveIsolationPatientId();
+    if (isolationCmp) {
+      patientIdProps = {};
+      patientIdProps[isolationCmp] = true;
+    }
 
     var patientVisIds = {};
     var nodeById = {};
-    window._allNodes.forEach(function(n) {
+    var baseNodesForCompare = window._allNodes;
+    var baseEdgesForCompare = window._allEdges;
+    baseNodesForCompare.forEach(function(n) {
       nodeById[n.id] = n;
       if (n.node_type === 'Patient' && patientIdProps[n.id_prop]) patientVisIds[n.id] = true;
     });
@@ -2748,7 +4146,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var visibleIds = {};
     Object.keys(patientVisIds).forEach(function(id) { visibleIds[id] = true; });
     var relevantEdges = [];
-    window._allEdges.forEach(function(e) {
+    baseEdgesForCompare.forEach(function(e) {
       if (patientVisIds[e.from] || patientVisIds[e.to]) {
         relevantEdges.push(e);
         visibleIds[e.from] = true;
@@ -2757,7 +4155,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     });
 
     var filteredNodes = [];
-    window._allNodes.forEach(function(n) {
+    baseNodesForCompare.forEach(function(n) {
       if (!visibleIds[n.id]) return;
       var c = JSON.parse(JSON.stringify(n));
       var ip = n.id_prop || n.id;
@@ -2787,17 +4185,25 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     if (_compareOriginalNodes && _compareOriginalEdges) {
       var net = (typeof getNet === 'function') ? getNet() : null;
       if (net) {
+        if (getEffectiveIsolationPatientId()) {
+          try { filterGraphToPatient(); } catch(e) {}
+        } else {
         net.setData({
           nodes: new vis.DataSet(_compareOriginalNodes),
           edges: new vis.DataSet(_compareOriginalEdges)
         });
         net.setOptions({ physics: { enabled: true } });
         net.once('stabilized', function() { net.setOptions({ physics: { enabled: false } }); net.fit({ animation: true }); });
+        }
       }
     }
     _compareOriginalNodes = null;
     _compareOriginalEdges = null;
-    document.getElementById('filterLabel').textContent = 'Showing: All';
+    if (!getEffectiveIsolationPatientId()) {
+      document.getElementById('filterLabel').textContent = 'Showing: All';
+    } else {
+      try { filterGraphToPatient(); } catch(e) {}
+    }
   }
 
   window.openCompareModal = openCompareModal;
@@ -3459,12 +4865,25 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   window.closeTimeline = closeTimeline;
 
   /* ===== Patient Summary Card & Insights ===== */
+  function _pscNodeName(n) {
+    if (!n) return '';
+    var fl = n.full_label;
+    if (fl != null && String(fl).trim() !== '') return String(fl).trim();
+    return (n.label != null ? String(n.label) : '') || (n.id_prop != null ? String(n.id_prop) : '');
+  }
   function _getConnectedByType(pid) {
     var allN = window._allNodes || [];
     var allE = window._allEdges || [];
     var visId = null;
-    allN.forEach(function(n) { if (n.node_type === 'Patient' && n.id_prop === pid) visId = n.id; });
-    if (!visId) return { diseases: [], symptoms: [], violations: [], drugs: [], clinical: null, name: '', age: '', sex: '' };
+    allN.forEach(function(n) {
+      if (n.node_type === 'Patient' && n.id_prop != null && String(n.id_prop) === String(pid)) visId = n.id;
+    });
+    var empty = {
+      diseases: [], symptoms: [], violations: [], drugs: [], clinical: null,
+      doctors: [], procedures: [], hospitals: [], notes: [], appointments: [], labs: [],
+      name: pid || '', age: '', sex: ''
+    };
+    if (!visId) return empty;
     var pNode = null;
     allN.forEach(function(n) { if (n.id === visId) pNode = n; });
     var connIds = {};
@@ -3472,33 +4891,82 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       if (e.from === visId) connIds[e.to] = e.label || '';
       if (e.to === visId) connIds[e.from] = e.label || '';
     });
+    /* Hospitals and labs are usually one edge away from Appointment / Encounter, not from Patient.
+       Include those second-hop nodes so seeded patients (e.g. P2) show facilities and labs. */
+    var summaryConn = {};
+    for (var ck in connIds) summaryConn[ck] = connIds[ck];
+    allE.forEach(function(e) {
+      var rt = e.label || '';
+      if (rt === 'AT_HOSPITAL') {
+        if (connIds.hasOwnProperty(e.from)) summaryConn[e.to] = summaryConn[e.to] || '';
+        if (connIds.hasOwnProperty(e.to)) summaryConn[e.from] = summaryConn[e.from] || '';
+      } else if (rt === 'ORDERED_LAB' || rt === 'INCLUDES_PROCEDURE') {
+        if (connIds.hasOwnProperty(e.from)) summaryConn[e.to] = summaryConn[e.to] || '';
+      }
+    });
     var diseases = [], symptoms = [], violations = [], drugs = [], clinical = null;
+    var doctors = [], procedures = [], hospitals = [], notes = [], appointments = [], labs = [];
+    var procSeen = {}, hospSeen = {}, labSeen = {};
     allN.forEach(function(n) {
-      if (!connIds.hasOwnProperty(n.id)) return;
-      if (n.node_type === 'Disease') diseases.push(n.label || n.id_prop);
-      else if (n.node_type === 'Symptom') symptoms.push(n.label || n.id_prop);
+      if (!summaryConn.hasOwnProperty(n.id)) return;
+      if (n.node_type === 'Disease') diseases.push(_pscNodeName(n));
+      else if (n.node_type === 'Symptom') symptoms.push(_pscNodeName(n));
       else if (n.node_type === 'Violation') {
         var sev = 'warning';
         var t = n.title || '';
         if (t.indexOf('critical') >= 0 || t.indexOf('Critical') >= 0) sev = 'critical';
         else if (t.indexOf('normal') >= 0 || t.indexOf('Normal') >= 0 || t.indexOf('Compliant') >= 0) sev = 'normal';
-        violations.push({ text: n.label || n.id_prop, severity: sev, title: t });
+        violations.push({ text: _pscNodeName(n), severity: sev, title: t, reason: n.violation_reason || '' });
       }
-      else if (n.node_type === 'Drug') drugs.push(n.label || n.id_prop);
+      else if (n.node_type === 'Drug') drugs.push(_pscNodeName(n));
       else if (n.node_type === 'ClinicalState') {
-        var tp = n.title || '';
-        var extract = function(key) { var m = tp.match(new RegExp(key + ':\\\\s*([\\\\d.]+)')); return m ? parseFloat(m[1]) : null; };
-        clinical = { sofa: extract('SOFA'), lactate: extract('Lactate'), map: extract('MAP'), gcs: extract('GCS'), creatinine: extract('Creatinine') };
+        var cm = n.clinical_metrics;
+        if (cm && typeof cm === 'object') {
+          var pf = function(v) { if (v === null || v === undefined || v === '') return null; var x = parseFloat(v); return isNaN(x) ? null : x; };
+          clinical = { sofa: pf(cm.sofa), lactate: pf(cm.lactate), map: pf(cm.map), gcs: pf(cm.gcs), creatinine: pf(cm.creatinine) };
+        } else {
+          var tp = n.title || '';
+          var extract = function(key) { var m = tp.match(new RegExp(key + ':\\\\s*([\\\\d.]+)')); return m ? parseFloat(m[1]) : null; };
+          clinical = { sofa: extract('SOFA'), lactate: extract('Lactate'), map: extract('MAP'), gcs: extract('GCS'), creatinine: extract('Creatinine') };
+        }
+      }
+      else if (n.node_type === 'Doctor') doctors.push({ name: _pscNodeName(n), specialty: (n.doctor_specialty || '').trim() });
+      else if (n.node_type === 'Procedure') {
+        var pn = _pscNodeName(n);
+        if (!procSeen[pn]) { procSeen[pn] = true; procedures.push(pn); }
+      }
+      else if (n.node_type === 'Hospital') {
+        var hn = _pscNodeName(n);
+        if (!hospSeen[hn]) { hospSeen[hn] = true; hospitals.push(hn); }
+      }
+      else if (n.node_type === 'PatientNote') {
+        var prev = (n.note_preview || _pscNodeName(n) || '').trim();
+        if (prev) notes.push(prev.length > 160 ? prev.slice(0, 157) + '…' : prev);
+      }
+      else if (n.node_type === 'Appointment') appointments.push(_pscNodeName(n));
+      else if (n.node_type === 'Lab') {
+        var ln = _pscNodeName(n);
+        if (!labSeen[ln]) { labSeen[ln] = true; labs.push(ln); }
       }
     });
-    var title = (pNode && pNode.title) || '';
-    var ageM = title.match(/Age:\\s*([^|<]+)/);
-    var sexM = title.match(/Sex:\\s*([^<]+)/);
+    var pname = _pscNodeName(pNode) || pid;
+    var ageStr = '';
+    var sexStr = '';
+    if (pNode && pNode.patient_age != null && String(pNode.patient_age).trim() !== '') ageStr = String(pNode.patient_age).trim();
+    if (pNode && pNode.patient_sex != null && String(pNode.patient_sex).trim() !== '') sexStr = String(pNode.patient_sex).trim();
+    if (!ageStr || !sexStr) {
+      var title = (pNode && pNode.title) || '';
+      var ageM = title.match(/Age:\\s*([^|<]+)/);
+      var sexM = title.match(/Sex:\\s*([^<|]+)/);
+      if (!ageStr && ageM) ageStr = ageM[1].trim();
+      if (!sexStr && sexM) sexStr = sexM[1].trim();
+    }
     return {
       diseases: diseases, symptoms: symptoms, violations: violations, drugs: drugs, clinical: clinical,
-      name: (pNode && pNode.label) || pid,
-      age: ageM ? ageM[1].trim() : '',
-      sex: sexM ? sexM[1].trim() : ''
+      doctors: doctors, procedures: procedures, hospitals: hospitals, notes: notes, appointments: appointments, labs: labs,
+      name: pname,
+      age: ageStr,
+      sex: sexStr
     };
   }
 
@@ -3555,10 +5023,45 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     if (d.drugs.length) d.drugs.forEach(function(x) { html += '<span class="psc-tag drug">' + x + '</span>'; });
     else html += '<span class="psc-none">None</span>';
     html += '</div></div>';
-    if (d.violations.length) {
-      html += '<div class="psc-section"><p class="psc-section-label">Violations</p><div class="psc-tags">';
-      d.violations.forEach(function(v) { html += '<span class="psc-tag violation-' + v.severity + '">' + v.text + '</span>'; });
+    html += '<div class="psc-section"><p class="psc-section-label">Care team</p><div class="psc-tags">';
+    if (d.doctors && d.doctors.length) {
+      d.doctors.forEach(function(doc) {
+        var line = doc.name + (doc.specialty ? ' (' + doc.specialty + ')' : '');
+        html += '<span class="psc-tag doctor">' + line + '</span>';
+      });
+    } else html += '<span class="psc-none">None</span>';
+    html += '</div></div>';
+    html += '<div class="psc-section"><p class="psc-section-label">Procedures</p><div class="psc-tags">';
+    if (d.procedures && d.procedures.length) d.procedures.forEach(function(x) { html += '<span class="psc-tag procedure">' + x + '</span>'; });
+    else html += '<span class="psc-none">None</span>';
+    html += '</div></div>';
+    html += '<div class="psc-section"><p class="psc-section-label">Facilities</p><div class="psc-tags">';
+    if (d.hospitals && d.hospitals.length) d.hospitals.forEach(function(x) { html += '<span class="psc-tag facility">' + x + '</span>'; });
+    else html += '<span class="psc-none">None</span>';
+    html += '</div></div>';
+    if (d.appointments && d.appointments.length) {
+      html += '<div class="psc-section"><p class="psc-section-label">Appointments</p><div class="psc-tags">';
+      d.appointments.forEach(function(x) { html += '<span class="psc-tag appointment">' + x + '</span>'; });
       html += '</div></div>';
+    }
+    if (d.labs && d.labs.length) {
+      html += '<div class="psc-section"><p class="psc-section-label">Labs</p><div class="psc-tags">';
+      d.labs.forEach(function(x) { html += '<span class="psc-tag lab">' + x + '</span>'; });
+      html += '</div></div>';
+    }
+    if (d.notes && d.notes.length) {
+      html += '<div class="psc-section"><p class="psc-section-label">Clinical notes</p><div class="psc-tags">';
+      d.notes.forEach(function(t) { html += '<span class="psc-tag clinical-note">' + t + '</span>'; });
+      html += '</div></div>';
+    }
+    if (d.violations.length) {
+      html += '<div class="psc-section"><p class="psc-section-label">Violations</p>';
+      d.violations.forEach(function(v) {
+        html += '<div class="psc-violation-block"><span class="psc-tag violation-' + v.severity + '">' + v.text + '</span>';
+        if (v.reason) html += '<p class="psc-violation-reason">' + v.reason + '</p>';
+        html += '</div>';
+      });
+      html += '</div>';
     }
     if (d.clinical) {
       html += '<div class="psc-section"><p class="psc-section-label">Vitals</p><div class="psc-tags">';
@@ -3647,6 +5150,26 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   var _patientContext = { selected: null, selectedMulti: [] };
 
   function _getAllPatientNodes() {
+    var visByPid = {};
+    (window._allNodes || []).forEach(function(n) {
+      if (n.node_type === 'Patient' && n.id_prop) visByPid[n.id_prop] = n.id;
+    });
+    if (window._useBackendPatientGraph && window._patientsSyncList && window._patientsSyncList.length) {
+      var ptsSync = [];
+      window._patientsSyncList.forEach(function(p) {
+        if (!p || !p.patient_id) return;
+        var src = p.source;
+        if (src == null && window._patientSourceById) src = window._patientSourceById[p.patient_id];
+        ptsSync.push({
+          pid: p.patient_id,
+          name: p.patient_name || p.patient_id,
+          visId: visByPid[p.patient_id] || null,
+          patient_source: src
+        });
+      });
+      ptsSync.sort(function(a, b) { return a.name.localeCompare(b.name); });
+      return ptsSync;
+    }
     var nodes = window._allNodes || [];
     var pts = [];
     nodes.forEach(function(n) {
@@ -3718,6 +5241,12 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   function selectGlobalPatient(pid, name, visId) {
     _patientContext.selected = { pid: pid, name: name, visId: visId };
     _patientContext.selectedMulti = [{ pid: pid, name: name, visId: visId }];
+    var sess = loadClinicalSession();
+    if (sess && sess.role === 'clinician') {
+      sess.selectedPid = pid;
+      sess.selectedName = name;
+      saveClinicalSession(sess);
+    }
     dismissPatientSelector();
     applyPatientContext();
   }
@@ -3729,6 +5258,9 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   window.dismissPatientSelector = dismissPatientSelector;
 
   function changePatient() {
+    if (window.currentUser && window.currentUser.role === 'patient') {
+      return;
+    }
     var overlay = document.getElementById('patientSelectorOverlay');
     if (overlay) {
       overlay.style.display = 'flex';
@@ -3740,6 +5272,24 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   window.changePatient = changePatient;
 
   function clearGlobalPatient() {
+    if (window.currentUser && window.currentUser.patientId) {
+      var pid = window.currentUser.patientId;
+      var pts = _getAllPatientNodes();
+      var found = null;
+      pts.forEach(function(p) { if (p.pid === pid) found = p; });
+      if (found) {
+        _patientContext.selected = { pid: found.pid, name: found.name, visId: found.visId };
+        _patientContext.selectedMulti = [{ pid: found.pid, name: found.name, visId: found.visId }];
+        applyPatientContext();
+        return;
+      }
+    }
+    var sClear = loadClinicalSession();
+    if (sClear && sClear.role === 'clinician') {
+      delete sClear.selectedPid;
+      delete sClear.selectedName;
+      saveClinicalSession(sClear);
+    }
     _patientContext.selected = null;
     _patientContext.selectedMulti = [];
     applyPatientContext();
@@ -3759,60 +5309,30 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     bar.innerHTML = '<span class="viewing-label">Viewing:</span>'
       + '<span class="viewing-patient">' + _patientContext.selected.name + ' (' + _patientContext.selected.pid + ')</span>'
       + '<button class="viewing-change" onclick="openTimeline(\\'' + _patientContext.selected.pid + '\\')" style="color:#3b82f6;text-decoration:none;font-weight:600;">View Timeline</button>'
-      + '<button class="viewing-change" onclick="clearGlobalPatient()">Show all patients</button>'
-      + '<button class="viewing-change" onclick="changePatient()">Change patient</button>';
+      + '<button class="viewing-change" onclick="clearGlobalPatient()">Show all patients</button>';
   }
 
   function filterGraphToPatient() {
     var net = getNet();
     if (!net || !net.body || !net.body.data) return;
     try { clearEgoHighlight(); } catch (e) {}
-    var allNodes = window._allNodes;
-    var allEdges = window._allEdges;
-    if (!allNodes || !allNodes.length) return;
-
-    if (!_patientContext.selected) {
-      net.body.data.nodes.update(allNodes);
-      net.body.data.edges.update(allEdges);
+    var scopePid = getEffectiveIsolationPatientId();
+    var labelName = (_patientContext && _patientContext.selected && _patientContext.selected.name) ||
+      (window.currentUser && window.currentUser.name) || '';
+    if (!scopePid) {
       try {
-        var fullN = new vis.DataSet(allNodes);
-        var fullE = new vis.DataSet(allEdges);
-        net.setData({ nodes: fullN, edges: fullE });
-      } catch(e) {}
-      document.getElementById('filterLabel').textContent = 'Showing: All';
-      var es = document.getElementById('graphEmptyState');
-      if (es) es.style.display = 'none';
+        net.setData({ nodes: new vis.DataSet([]), edges: new vis.DataSet([]) });
+      } catch(e2) {}
+      window._allNodes = [];
+      window._allEdges = [];
+      var lab0 = document.getElementById('filterLabel');
+      if (lab0) lab0.textContent = 'Select a patient to load graph';
       return;
     }
-
-    var pid = _patientContext.selected.pid;
-    var nodeMap = {};
-    allNodes.forEach(function(n) { nodeMap[n.id] = n; });
-    var patientVisId = null;
-    allNodes.forEach(function(n) { if (n.node_type === 'Patient' && n.id_prop === pid) patientVisId = n.id; });
-
-    if (!patientVisId) return;
-
-    var connectedIds = {};
-    connectedIds[patientVisId] = true;
-    allEdges.forEach(function(e) {
-      if (e.from === patientVisId) connectedIds[e.to] = true;
-      if (e.to === patientVisId) connectedIds[e.from] = true;
+    loadPatientGraphFromBackend(scopePid, function() {
+      var lab = document.getElementById('filterLabel');
+      if (lab) lab.textContent = 'Viewing: ' + (labelName || scopePid);
     });
-    var secondLevel = {};
-    allEdges.forEach(function(e) {
-      if (connectedIds[e.from] && !connectedIds[e.to]) secondLevel[e.to] = true;
-      if (connectedIds[e.to] && !connectedIds[e.from]) secondLevel[e.from] = true;
-    });
-    Object.keys(secondLevel).forEach(function(id) { connectedIds[id] = true; });
-
-    var filteredN = allNodes.filter(function(n) { return connectedIds[n.id]; });
-    var filteredE = allEdges.filter(function(e) { return connectedIds[e.from] && connectedIds[e.to]; });
-
-    try {
-      net.setData({ nodes: new vis.DataSet(filteredN), edges: new vis.DataSet(filteredE) });
-      document.getElementById('filterLabel').textContent = 'Viewing: ' + _patientContext.selected.name;
-    } catch(e) {}
   }
 
   function applyPatientContext() {
@@ -3837,7 +5357,12 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   }
 
   document.addEventListener('DOMContentLoaded', function() {
+    initClinicalAuthGate();
     initDashboard();
+    var lu = document.getElementById('loginUser');
+    var lp = document.getElementById('loginPass');
+    if (lu) lu.addEventListener('keydown', function(ev) { if (ev.key === 'Enter') submitClinicalLogin(); });
+    if (lp) lp.addEventListener('keydown', function(ev) { if (ev.key === 'Enter') submitClinicalLogin(); });
     var dz = document.getElementById('uploadDropzone');
     if (dz) {
       dz.addEventListener('click', function() { document.getElementById('uploadFileInput').click(); });
@@ -3851,6 +5376,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     function attachToGraph() {
       var net = getNet();
       if (net) {
+        restrictWheelZoomUnlessModifier(net);
         if (!window._graphHooksDone) {
           window._graphHooksDone = true;
           net.on('click', function(params) {
@@ -3964,7 +5490,10 @@ def run_dashboard():
     sidebar = _sidebar_and_script(stats or {}, explanations or {})
     html = inject_dashboard_into_html(html, sidebar)
     path.write_text(html, encoding="utf-8")
-    webbrowser.open(path.as_uri())
+    if sys.platform == "darwin":
+        subprocess.run(["open", "-a", "Safari", str(path.resolve())], check=False)
+    else:
+        webbrowser.open(path.as_uri())
     print(f"Dashboard saved: {path}")
     print("Use the sidebar for legend and stats; click a node for protocol explanation; use filters to explore.")
 

@@ -91,7 +91,9 @@ _STRUCTURED_SECTIONS_USER_SUFFIX = (
     "HAS_DISEASE, HAS_SYMPTOM, HAS_VIOLATION, HAS_CLINICAL_STATE, TREATED_WITH, HAD_PROCEDURE). "
     "Do not list evidence that is only generic medical knowledge with no support in context.\n\n"
     "## Explanation\n"
-    "Brief reasoning that connects Evidence to the question; avoid repeating introduction-level generalities.\n"
+    "Brief reasoning that connects Evidence to the question; name concrete gaps when supported by context "
+    "(for example missing recommended drugs or tests such as spirometry), and avoid deferring to "
+    "\"your clinician will explain\" instead of summarizing what the record shows.\n"
 )
 
 

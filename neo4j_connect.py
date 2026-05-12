@@ -2,7 +2,7 @@
 Connect to Neo4j instance (e.g. BarbaraTest) and run queries on the default database.
 """
 from neo4j import GraphDatabase
-from neo4j_config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE
+from neo4j_config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE, USE_GRAPH_DEMO
 
 
 def get_driver():
@@ -18,6 +18,11 @@ def run_query(cypher: str, parameters: dict | None = None):
     Run a Cypher query on the configured Neo4j database.
     Returns list of records (each record is a dict of key -> value).
     """
+    if USE_GRAPH_DEMO:
+        raise RuntimeError(
+            "Neo4j queries are disabled while USE_GRAPH_DEMO=1. "
+            "Unset USE_GRAPH_DEMO or set it to 0 to use a real database."
+        )
     params = parameters or {}
     driver = get_driver()
     try:
@@ -30,6 +35,8 @@ def run_query(cypher: str, parameters: dict | None = None):
 
 def verify_connection():
     """Check connectivity and that the database is reachable."""
+    if USE_GRAPH_DEMO:
+        return True
     driver = get_driver()
     try:
         driver.verify_connectivity()

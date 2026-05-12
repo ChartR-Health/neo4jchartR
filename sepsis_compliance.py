@@ -5,6 +5,7 @@ Uses neo4j_ops and neo4j_connect.run_query.
 """
 from typing import Any
 
+from neo4j_config import USE_GRAPH_DEMO
 from neo4j_ops import get_patient_clinical_state, get_sepsis_guidelines, get_patients_with_clinical_state
 from neo4j_connect import run_query
 
@@ -190,6 +191,8 @@ def sync_violations_to_neo4j() -> int:
     Sepsis ids: V_{patient_id}_{index}. Disease ids: V_D_{patient_id}_{disease_id}_{index}.
     Returns count of violation nodes created.
     """
+    if USE_GRAPH_DEMO:
+        return 0
     run_query("MATCH (v:Violation) DETACH DELETE v")
     count = 0
     # Sepsis guideline violations

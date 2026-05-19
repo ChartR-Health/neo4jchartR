@@ -496,6 +496,182 @@ def get_next_patient_id():
     return f"P{max_num + 1}"
 
 
+def patient_exists(patient_id: str) -> bool:
+    """Return True if a Patient with this id exists in the graph."""
+    pid = (patient_id or "").strip()
+    if not pid:
+        return False
+    if USE_GRAPH_DEMO:
+        from graph_demo_data import demo_patient_exists
+
+        return demo_patient_exists(pid)
+    rows = run_query(
+        "MATCH (p:Patient {id: $pid}) RETURN p.id AS id LIMIT 1",
+        {"pid": pid},
+    )
+    return bool(rows)
+
+
+def _next_note_id() -> str:
+    rows = run_query("MATCH (n:PatientNote) RETURN n.id AS id")
+    max_num = 0
+    for r in rows:
+        nid = r.get("id") or ""
+        if nid.startswith("N") and nid[1:].isdigit():
+            max_num = max(max_num, int(nid[1:]))
+    return f"N{max_num + 1}"
+
+
+def _build_document_note_text(data: dict, document_summary: str | None = None) -> str:
+    if document_summary and document_summary.strip():
+        return document_summary.strip()
+    from datetime import date
+
+    parts = [f"Document uploaded on {date.today().isoformat()}."]
+    diseases = data.get("diseases") or []
+    symptoms = data.get("symptoms") or []
+    clinical = data.get("clinical_values") or {}
+    if diseases:
+        parts.append("Diagnoses noted: " + ", ".join(diseases) + ".")
+    if symptoms:
+        parts.append("Symptoms noted: " + ", ".join(symptoms) + ".")
+    if clinical:
+        cv = ", ".join(f"{k}={v}" for k, v in clinical.items())
+        parts.append("Clinical values: " + cv + ".")
+    if len(parts) == 1:
+        parts.append("Visit or discharge summary added to the chart.")
+    return " ".join(parts)
+
+
+def _apply_extracted_data_to_patient(pid: str, data: dict) -> None:
+    """Merge symptoms, diseases, and optional clinical state onto an existing patient."""
+    for symptom in data.get("symptoms") or []:
+        sym_id = "SYM_" + "".join(c if c.isalnum() else "_" for c in symptom.lower())[:48]
+        run_query(
+            "MERGE (s:Symptom {id: $sym_id}) SET s.name = $name "
+            "WITH s MATCH (p:Patient {id: $pid}) MERGE (p)-[:HAS_SYMPTOM]->(s)",
+            {"sym_id": sym_id, "name": symptom, "pid": pid},
+        )
+
+    for disease_name in data.get("diseases") or []:
+        existing = run_query(
+            "MATCH (d:Disease) WHERE toLower(d.name) = toLower($name) "
+            "RETURN d.id AS disease_id LIMIT 1",
+            {"name": disease_name},
+        )
+        if existing and existing[0].get("disease_id"):
+            run_query(
+                "MATCH (p:Patient {id: $pid}), (d:Disease {id: $did}) "
+                "MERGE (p)-[:HAS_DISEASE]->(d)",
+                {"pid": pid, "did": existing[0]["disease_id"]},
+            )
+        else:
+            did = "D_" + "".join(c if c.isalnum() else "_" for c in disease_name)[:40]
+            run_query(
+                "MERGE (d:Disease {id: $did}) SET d.name = $name "
+                "WITH d MATCH (p:Patient {id: $pid}) MERGE (p)-[:HAS_DISEASE]->(d)",
+                {"did": did, "name": disease_name, "pid": pid},
+            )
+
+    clinical = data.get("clinical_values") or {}
+    if clinical:
+        import time
+
+        cs_id = f"CS_{pid}_doc_{int(time.time())}"
+        key_map = {
+            "MAP": "map",
+            "SOFA": "sofa_score",
+            "creatinine": "creatinine",
+            "GCS": "gcs",
+            "lactate": "lactate",
+        }
+        set_parts = []
+        params: dict = {"cs_id": cs_id, "pid": pid}
+        for src_key, neo_key in key_map.items():
+            val = clinical.get(src_key)
+            if val is not None:
+                params[neo_key] = val
+                set_parts.append(f"c.{neo_key} = ${neo_key}")
+        for k, v in clinical.items():
+            if k not in key_map and v is not None:
+                safe = "".join(c if c.isalnum() else "_" for c in k.lower())[:32]
+                params[safe] = v
+                set_parts.append(f"c.{safe} = ${safe}")
+        if set_parts:
+            run_query(
+                f"CREATE (c:ClinicalState {{id: $cs_id}}) SET {', '.join(set_parts)} "
+                f"WITH c MATCH (p:Patient {{id: $pid}}) "
+                f"CREATE (p)-[:HAS_CLINICAL_STATE]->(c)",
+                params,
+            )
+
+
+def append_document_to_patient(
+    patient_id: str, data: dict, document_summary: str | None = None
+) -> dict:
+    """
+    Add extracted document data to an existing patient (symptoms, diseases, clinical state, note).
+    Does not create a new Patient node.
+    """
+    if USE_GRAPH_DEMO:
+        raise RuntimeError(
+            "Saving patients to the graph requires Neo4j. Set USE_GRAPH_DEMO=0 and configure NEO4J_URI."
+        )
+    pid = (patient_id or "").strip()
+    if not patient_exists(pid):
+        raise ValueError(f"Patient not found: {pid}")
+
+    rows = run_query(
+        "MATCH (p:Patient {id: $pid}) RETURN p.name AS name, p.age AS age, p.sex AS sex LIMIT 1",
+        {"pid": pid},
+    )
+    existing = rows[0] if rows else {}
+    name = data.get("patient_name") or existing.get("name") or pid
+    age = data.get("age") if data.get("age") is not None else existing.get("age")
+    sex = data.get("sex") or existing.get("sex")
+
+    if data.get("age") is not None or data.get("sex"):
+        run_query(
+            "MATCH (p:Patient {id: $pid}) SET p.age = coalesce($age, p.age), p.sex = coalesce($sex, p.sex)",
+            {"pid": pid, "age": data.get("age"), "sex": data.get("sex")},
+        )
+    if data.get("patient_name"):
+        run_query(
+            "MATCH (p:Patient {id: $pid}) SET p.name = $name",
+            {"pid": pid, "name": name},
+        )
+
+    _apply_extracted_data_to_patient(pid, data)
+
+    from datetime import date
+
+    note_id = _next_note_id()
+    note_text = _build_document_note_text(data, document_summary)
+    run_query(
+        """
+        CREATE (n:PatientNote {id: $note_id, text: $text, date: $date, source: 'document_upload'})
+        WITH n
+        MATCH (p:Patient {id: $pid})
+        CREATE (p)-[:HAS_NOTE]->(n)
+        RETURN n.id AS note_id
+        """,
+        {"note_id": note_id, "text": note_text, "date": date.today().isoformat(), "pid": pid},
+    )
+
+    return {
+        "patient_id": pid,
+        "patient_name": name,
+        "age": age,
+        "sex": sex,
+        "symptoms": data.get("symptoms") or [],
+        "diseases": data.get("diseases") or [],
+        "clinical_values": data.get("clinical_values") or {},
+        "note_id": note_id,
+        "note_text": note_text,
+        "mode": "append",
+    }
+
+
 def create_patient_from_document(data: dict) -> dict:
     """
     Create a Patient node and related graph structure from document-extracted data.
@@ -523,62 +699,10 @@ def create_patient_from_document(data: dict) -> dict:
         {"pid": pid, "name": name, "age": age, "sex": sex},
     )
 
-    for symptom in data.get("symptoms") or []:
-        sym_id = "SYM_" + "".join(c if c.isalnum() else "_" for c in symptom.lower())
-        run_query(
-            "MERGE (s:Symptom {id: $sym_id}) SET s.name = $name "
-            "WITH s MATCH (p:Patient {id: $pid}) MERGE (p)-[:HAS_SYMPTOM]->(s)",
-            {"sym_id": sym_id, "name": symptom, "pid": pid},
-        )
-
-    for disease_name in data.get("diseases") or []:
-        existing = run_query(
-            "MATCH (d:Disease) WHERE toLower(d.name) = toLower($name) "
-            "RETURN d.id AS disease_id LIMIT 1",
-            {"name": disease_name},
-        )
-        if existing and existing[0].get("disease_id"):
-            run_query(
-                "MATCH (p:Patient {id: $pid}), (d:Disease {id: $did}) "
-                "MERGE (p)-[:HAS_DISEASE]->(d)",
-                {"pid": pid, "did": existing[0]["disease_id"]},
-            )
-        else:
-            did = "D_" + "".join(c if c.isalnum() else "_" for c in disease_name)
-            run_query(
-                "MERGE (d:Disease {id: $did}) SET d.name = $name "
-                "WITH d MATCH (p:Patient {id: $pid}) MERGE (p)-[:HAS_DISEASE]->(d)",
-                {"did": did, "name": disease_name, "pid": pid},
-            )
+    _apply_extracted_data_to_patient(pid, data)
 
     clinical = data.get("clinical_values") or {}
-    if clinical:
-        cs_id = f"CS_{pid}"
-        key_map = {
-            "MAP": "map", "SOFA": "sofa_score", "creatinine": "creatinine",
-            "GCS": "gcs", "lactate": "lactate",
-        }
-        set_parts = []
-        params: dict = {"cs_id": cs_id, "pid": pid}
-        for src_key, neo_key in key_map.items():
-            val = clinical.get(src_key)
-            if val is not None:
-                params[neo_key] = val
-                set_parts.append(f"c.{neo_key} = ${neo_key}")
-        for k, v in clinical.items():
-            if k not in key_map and v is not None:
-                safe = "".join(c if c.isalnum() else "_" for c in k.lower())
-                params[safe] = v
-                set_parts.append(f"c.{safe} = ${safe}")
-        if set_parts:
-            run_query(
-                f"CREATE (c:ClinicalState {{id: $cs_id}}) SET {', '.join(set_parts)} "
-                f"WITH c MATCH (p:Patient {{id: $pid}}) "
-                f"CREATE (p)-[:HAS_CLINICAL_STATE]->(c)",
-                params,
-            )
-
-    return {
+    result = {
         "patient_id": pid,
         "patient_name": name,
         "age": age,
@@ -586,7 +710,27 @@ def create_patient_from_document(data: dict) -> dict:
         "symptoms": data.get("symptoms") or [],
         "diseases": data.get("diseases") or [],
         "clinical_values": clinical,
+        "mode": "create",
     }
+    note_text = _build_document_note_text(data)
+    if note_text:
+        from datetime import date
+
+        note_id = _next_note_id()
+        run_query(
+            """
+            CREATE (n:PatientNote {id: $note_id, text: $text, date: $date, source: 'document_upload'})
+            WITH n MATCH (p:Patient {id: $pid}) CREATE (p)-[:HAS_NOTE]->(n)
+            """,
+            {
+                "note_id": note_id,
+                "text": note_text,
+                "date": date.today().isoformat(),
+                "pid": pid,
+            },
+        )
+        result["note_id"] = note_id
+    return result
 
 
 def get_patient_timeline_data(patient_id: str) -> dict:
@@ -905,3 +1049,45 @@ def get_patient_scoped_graph_payload(patient_id: str) -> dict:
         out_rows.append(r)
 
     return rows_to_vis_payload(out_rows, pid)
+
+
+def get_compare_graph_payload(patient_ids: list[str]) -> dict:
+    """
+    Merge patient-scoped subgraphs for 2+ patients into one vis-network payload.
+    Shared Neo4j nodes (e.g. the same Disease) appear once; each Patient node is kept.
+    """
+    from patient_graph_payload import rows_to_vis_payload
+
+    pids = list(dict.fromkeys(p for p in (patient_ids or []) if p))
+    if len(pids) < 2:
+        raise ValueError("At least two patient ids are required for compare graph.")
+
+    seen_rows: set[tuple] = set()
+    merged_rows: list[dict] = []
+
+    for pid in pids:
+        if USE_GRAPH_DEMO:
+            from graph_demo_data import demo_collect_patient_scoped_graph_rows, demo_patient_exists
+
+            if not demo_patient_exists(pid):
+                continue
+            rows = demo_collect_patient_scoped_graph_rows(pid)
+        else:
+            chk = run_query(
+                "MATCH (p:Patient {id: $pid}) RETURN count(p) AS c", {"pid": pid}
+            )
+            if not chk or chk[0].get("c", 0) == 0:
+                continue
+            rows = collect_patient_scoped_graph_rows(pid)
+
+        for r in rows:
+            k = (r.get("src_id"), r.get("tgt_id"), r.get("rel_type"))
+            if None in k or k in seen_rows:
+                continue
+            seen_rows.add(k)
+            merged_rows.append(r)
+
+    if not merged_rows:
+        return {"nodes": [], "relationships": []}
+
+    return rows_to_vis_payload(merged_rows, pids[0])

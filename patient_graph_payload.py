@@ -278,6 +278,7 @@ def rows_to_vis_payload(rows: list[dict], patient_id: str) -> dict[str, Any]:
                 "label": rt,
                 "title": etitle,
                 "rel_type": rt,
+                "is_violation": True,
                 "width": 2.6,
                 "color": {"color": EDGE_COLOR_VIOLATION, "highlight": "#991b1b"},
                 "arrows": "to",

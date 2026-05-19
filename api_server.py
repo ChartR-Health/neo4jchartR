@@ -20,11 +20,14 @@ from pydantic import BaseModel
 from ai_agent import ask_agent, ai_agent_query, patient_analysis_to_agent_response, ask_agent_with_context
 from document_upload import extract_text_from_upload, extract_medical_data
 from neo4j_ops import (
+    append_document_to_patient,
     create_patient_from_document,
     get_all_patients_graph_data,
+    get_compare_graph_payload,
     get_patient_scoped_graph_payload,
     get_patients_for_comparison,
     get_patient_timeline_data,
+    patient_exists,
 )
 from ai_compliance import check_patient_compliance
 from neo4j_config import USE_GRAPH_DEMO
@@ -74,6 +77,7 @@ class ConfirmPatientRequest(BaseModel):
     symptoms: list[str] = []
     diseases: list[str] = []
     clinical_values: dict = {}
+    document_summary: str | None = None
 
 
 class CompareRequest(BaseModel):
@@ -200,6 +204,33 @@ def confirm_patient_endpoint(body: ConfirmPatientRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/patients/{patient_id}/append-document")
+def append_document_endpoint(patient_id: str, body: ConfirmPatientRequest):
+    """
+    Add a recent visit / discharge document to an existing patient chart.
+    Merges symptoms, diseases, clinical values, and creates a PatientNote.
+    """
+    _graph_demo_blocks_persisted_queries()
+    pid = (patient_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="Patient id is required.")
+    if not patient_exists(pid):
+        raise HTTPException(status_code=404, detail=f"Patient not found: {pid}")
+    if not body.symptoms and not body.diseases and not body.clinical_values:
+        raise HTTPException(
+            status_code=400,
+            detail="No medical data to add — upload a document with extractable content.",
+        )
+    try:
+        payload = body.model_dump()
+        summary = payload.pop("document_summary", None)
+        return append_document_to_patient(pid, payload, document_summary=summary)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/compare-patients")
 def compare_patients_endpoint(body: CompareRequest):
     """
@@ -264,11 +295,39 @@ def compare_patients_endpoint(body: CompareRequest):
     for s in common["symptoms"]:
         common_node_ids.append(f"Symptom:{s['id']}")
 
+    common_links: list[dict] = []
+    for p in patients:
+        pid = p["patient_id"]
+        for d in common["diseases"]:
+            common_links.append(
+                {
+                    "patient_id": pid,
+                    "node_key": f"Disease:{d['id']}",
+                    "rel_type": "HAS_DISEASE",
+                }
+            )
+        for s in common["symptoms"]:
+            common_links.append(
+                {
+                    "patient_id": pid,
+                    "node_key": f"Symptom:{s['id']}",
+                    "rel_type": "HAS_SYMPTOM",
+                }
+            )
+
+    try:
+        graph = get_compare_graph_payload(ids)
+    except Exception:
+        graph = {"nodes": [], "relationships": []}
+
     return {
         "patients": patients,
         "common": common,
         "highlight_nodes": list(dict.fromkeys(highlight_nodes)),
         "common_node_ids": sorted(set(common_node_ids)),
+        "common_links": common_links,
+        "patient_ids": ids,
+        "graph": graph,
     }
 
 
@@ -442,6 +501,7 @@ def root():
             "POST /analyze-patient": "patient_id -> patient protocol analysis + highlight_query",
             "POST /upload-document": "Upload medical document -> extracted data preview",
             "POST /confirm-patient": "Confirm extracted data -> create Patient in Neo4j",
+            "POST /patients/{patient_id}/append-document": "Add document data to existing patient chart",
             "GET  /benchmark": "Run live heuristic benchmark -> scores + test case table",
             "GET  /patients-sync": "All patients + relationships for graph/filter sync",
             "GET  /patient-graph/{patient_id}": "Patient-scoped vis subgraph (backend-enforced)",

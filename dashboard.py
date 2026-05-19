@@ -284,7 +284,13 @@ def build_dashboard_graph():
         "hover": true,
         "tooltipDelay": 260,
         "hideEdgesOnDrag": false,
-        "hideEdgesOnZoom": false
+        "hideEdgesOnZoom": false,
+        "navigationButtons": true,
+        "keyboard": {
+          "enabled": true,
+          "bindToWindow": false,
+          "speed": { "x": 12, "y": 12, "zoom": 0.04 }
+        }
       }
     }""")
 
@@ -897,7 +903,16 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
 
   /* ===== MAIN AREA ===== */
   .dashboard-main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; min-height: 0; overflow: hidden; background: #f8fafc; }
-  .dashboard-main #mynetwork { flex: 1; min-height: 0; height: 100%; background: #ffffff !important; border: none !important; }
+  .dashboard-main #mynetwork { flex: 1; min-height: 0; height: 100%; background: #ffffff !important; border: none !important; cursor: grab; }
+  .dashboard-main #mynetwork:active { cursor: grabbing; }
+  .graph-nav-hint { position: absolute; top: 3.25rem; left: 0.65rem; z-index: 12; font-size: 0.6875rem; color: #64748b;
+    background: rgba(255,255,255,0.92); border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.35rem 0.55rem;
+    pointer-events: none; line-height: 1.35; max-width: 16rem; }
+  .graph-nav-controls { position: absolute; top: 3.25rem; right: 0.65rem; z-index: 12; display: flex; flex-direction: column; gap: 0.35rem; }
+  .graph-nav-controls button { width: 2.1rem; height: 2.1rem; border-radius: 8px; border: 1px solid #e2e8f0;
+    background: rgba(255,255,255,0.95); color: #334155; font-size: 1rem; font-weight: 700; cursor: pointer;
+    box-shadow: 0 2px 8px rgba(15,23,42,0.08); line-height: 1; padding: 0; }
+  .graph-nav-controls button:hover { background: #f1f5f9; border-color: #cbd5e1; }
 
   /* ===== FILTER BAR ===== */
   .filter-bar { padding: 0.5rem 1rem 0.5rem 2.5rem; background: #ffffff; border-bottom: 1px solid #e2e8f0;
@@ -939,6 +954,8 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     padding: 0.25rem; border-radius: 6px; line-height: 1; transition: all 0.15s; }
   .upload-panel-close:hover { background: #f1f5f9; color: #0f172a; }
   .upload-panel-body { padding: 1.5rem; }
+  .upload-target-banner { font-size: 0.8125rem; color: #1e40af; background: #eff6ff; border: 1px solid #bfdbfe;
+    border-radius: 8px; padding: 0.625rem 0.75rem; margin-bottom: 1rem; line-height: 1.45; }
   .upload-dropzone { border: 2px dashed #cbd5e1; border-radius: 12px; padding: 2rem; text-align: center;
     cursor: pointer; transition: all 0.2s; background: #f8fafc; }
   .upload-dropzone:hover, .upload-dropzone.dragover { border-color: #3b82f6; background: #eff6ff; }
@@ -1251,9 +1268,9 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
         <div id="aiLoading" class="ai-loading" style="display:none;" aria-live="polite"><span class="loading-spinner"></span> Analyzing&hellip;</div>
       </div>
     </div>
-    <button type="button" class="upload-doc-btn" onclick="openUploadModal()">
+    <button type="button" id="uploadDocBtn" class="upload-doc-btn" onclick="openUploadModal()">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-      Upload Document
+      <span id="uploadDocBtnLabel">Upload Document</span>
     </button>
     <button type="button" id="clinicalLogoutBtn" class="header-logout-btn" style="display:none;" onclick="clinicalLogout()">Log out</button>
   </div>
@@ -1262,10 +1279,11 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
 <div id="uploadModal" class="upload-modal" style="display:none;" onclick="if(event.target===this)closeUploadModal()">
   <div class="upload-panel">
     <div class="upload-panel-header">
-      <h3>Upload Medical Document</h3>
+      <h3 id="uploadModalTitle">Upload Medical Document</h3>
       <button class="upload-panel-close" onclick="closeUploadModal()">&times;</button>
     </div>
     <div class="upload-panel-body">
+      <p id="uploadTargetBanner" class="upload-target-banner" style="display:none;"></p>
       <div id="uploadDropzone" class="upload-dropzone">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
         <p>Drag &amp; drop a medical document here</p>
@@ -1281,7 +1299,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     </div>
     <div id="uploadActions" class="upload-actions" style="display:none;">
       <button type="button" class="cancel-btn" onclick="resetUploadUI()">Cancel</button>
-      <button type="button" class="confirm-btn" id="confirmPatientBtn" onclick="confirmCreatePatient()">Confirm &amp; Create Patient</button>
+      <button type="button" class="confirm-btn" id="confirmPatientBtn" onclick="confirmUploadDocument()">Confirm &amp; Create Patient</button>
     </div>
   </div>
 </div>
@@ -1500,6 +1518,12 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       <button type="button" class="benchmark-btn" id="benchmarkRunBtn" onclick="runBenchmark()">Run Benchmark</button>
       <span id="filterLabel">Showing: All</span>
     </div>
+    <div class="graph-nav-hint" id="graphNavHint">Drag empty space to pan · Scroll to pan · Ctrl/⌘ + scroll to zoom</div>
+    <div class="graph-nav-controls" aria-label="Graph navigation">
+      <button type="button" title="Zoom in" onclick="graphZoomBy(1.2)">+</button>
+      <button type="button" title="Zoom out" onclick="graphZoomBy(0.83)">−</button>
+      <button type="button" title="Fit graph to view" onclick="graphFitView()">⊡</button>
+    </div>
     MYNETWORK_PLACEHOLDER
     <div class="explain-panel empty" id="explainPanel">
       <h4 id="explainTitle">Protocol explanation</h4>
@@ -1669,7 +1693,39 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     if (_zoomDetailTimer) clearTimeout(_zoomDetailTimer);
     _zoomDetailTimer = setTimeout(function() { applyZoomProgressiveDetail(sc); }, 100);
   }
-  /** vis-network maps wheel/trackpad scroll to zoom and preventDefault(), so moving over the graph feels like random zoom. Only zoom when Ctrl/Cmd is held; pinch on macOS usually sets ctrlKey. */
+  function ensureGraphInteraction(net) {
+    if (!net) return;
+    try {
+      net.setOptions({
+        interaction: {
+          dragNodes: true,
+          dragView: true,
+          zoomView: true,
+          hover: true,
+          navigationButtons: true,
+          keyboard: { enabled: true, bindToWindow: false, speed: { x: 14, y: 14, zoom: 0.05 } }
+        }
+      });
+    } catch (eOpt) {}
+    restrictWheelZoomUnlessModifier(net);
+  }
+  function graphFitView() {
+    var net = getNet();
+    if (!net) return;
+    try { net.fit({ animation: { duration: 350, easingFunction: 'easeInOutQuad' } }); } catch (e) {}
+  }
+  function graphZoomBy(factor) {
+    var net = getNet();
+    if (!net || !factor) return;
+    try {
+      var sc = typeof net.getScale === 'function' ? net.getScale() : 1;
+      var pos = net.getViewPosition();
+      net.moveTo({ scale: Math.max(0.12, Math.min(4, sc * factor)), position: pos, animation: { duration: 200 } });
+    } catch (e) {}
+  }
+  window.graphFitView = graphFitView;
+  window.graphZoomBy = graphZoomBy;
+  /** Ctrl/Cmd + scroll zooms; plain scroll/trackpad pans the view. */
   function restrictWheelZoomUnlessModifier(net) {
     if (!net || net._wheelZoomModifierPatched) return;
     try {
@@ -1678,9 +1734,22 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       var orig = ih.body.eventListeners.onMouseWheel;
       if (typeof orig !== 'function') return;
       ih.body.eventListeners.onMouseWheel = function(event) {
-        if (!event || event.deltaY === 0) return;
-        if (!event.ctrlKey && !event.metaKey) return;
-        orig(event);
+        if (!event) return;
+        var dy = event.deltaY || 0;
+        var dx = event.deltaX || 0;
+        if (dy === 0 && dx === 0) return;
+        if (event.ctrlKey || event.metaKey) {
+          orig(event);
+          return;
+        }
+        try {
+          var scale = net.body.view.scale || 1;
+          var tr = net.body.view.translation || { x: 0, y: 0 };
+          net.moveTo({
+            position: { x: tr.x - dx / scale, y: tr.y - dy / scale },
+            animation: false
+          });
+        } catch (ePan) {}
       };
       net._wheelZoomModifierPatched = true;
     } catch (e0) {}
@@ -1865,6 +1934,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     showAuthTransition('Signing out…');
     clearClinicalSession();
     window.currentUser = null;
+    updateUploadUiForRole();
     _patientContext.selected = null;
     _patientContext.selectedMulti = [];
     try {
@@ -1895,6 +1965,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       return;
     }
     applySessionToApp(sess);
+    updateUploadUiForRole();
     hideLoginOverlay();
     if (sess.role === 'clinician' && !sess.selectedPid) {
       var ps = document.getElementById('patientSelectorOverlay');
@@ -2014,7 +2085,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var nodes = data.nodes || [];
     var rels = data.relationships || [];
     var sel = patientId || getEffectiveIsolationPatientId();
-    if (sel) {
+    if (sel && !window._compareActive) {
       nodes = nodes.filter(function(n) {
         if (n.node_type === 'Patient' && n.id_prop != null && String(n.id_prop) !== String(sel)) return false;
         if (n.patientId != null && String(n.patientId) !== String(sel)) return false;
@@ -2040,6 +2111,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       try {
         net.setData({ nodes: new vis.DataSet(nodes), edges: new vis.DataSet(rels) });
       } catch (e0) { fireDoneOnce(); return; }
+      ensureGraphInteraction(net);
       populateFilterOptions();
       try {
         var pidSync = patientId || getEffectiveIsolationPatientId();
@@ -2214,26 +2286,58 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
         allNodes.forEach(function(n) { visibleIds[n.id] = true; });
       }
     }
-    function isRedEdge(e) {
+    function isViolationEdge(e) {
+      if (e && e.is_violation === true) return true;
       var c = e.color;
       var s = (typeof c === 'string') ? c : (c && c.color);
       if (!s) return false;
-      if (s === '#dc2626' || s === '#cc0000') return true;
+      if (s === '#dc2626' || s === '#cc0000' || s === '#991b1b') return true;
       return typeof s === 'string' && (s.indexOf('220,38,38') >= 0 || s.indexOf('239,68,68') >= 0);
     }
-    allNodes.forEach(function(n) {
-      var show = !!visibleIds[n.id];
-      if (compliance === 'violation') {
-        var hasViolation = allEdges.some(function(e) { return (e.from === n.id || e.to === n.id) && isRedEdge(e); });
-        if (!hasViolation) show = false;
-      } else if (compliance === 'compliant') {
-        var hasViolation = allEdges.some(function(e) { return (e.from === n.id || e.to === n.id) && isRedEdge(e); });
-        if (hasViolation) show = false;
+    if (compliance === 'violation') {
+      var violationNodes = {};
+      allEdges.forEach(function(e) {
+        if (!isViolationEdge(e)) return;
+        if (visibleIds[e.from] && visibleIds[e.to]) {
+          violationNodes[e.from] = true;
+          violationNodes[e.to] = true;
+        }
+      });
+      Object.keys(visibleIds).forEach(function(id) {
+        if (!violationNodes[id]) delete visibleIds[id];
+      });
+    } else if (compliance === 'compliant') {
+      var seeds = [];
+      allNodes.forEach(function(n) {
+        if (visibleIds[n.id] && n.node_type === 'Patient') seeds.push(n.id);
+      });
+      if (!seeds.length) {
+        allNodes.forEach(function(n) { if (visibleIds[n.id]) seeds.push(n.id); });
       }
-      if (!show) delete visibleIds[n.id];
-    });
+      var connected = {};
+      seeds.forEach(function(id) { connected[id] = true; });
+      var stack = seeds.slice();
+      while (stack.length) {
+        var cur = stack.pop();
+        allEdges.forEach(function(e) {
+          if (isViolationEdge(e)) return;
+          var other = e.from === cur ? e.to : (e.to === cur ? e.from : null);
+          if (!other || connected[other] || !visibleIds[other]) return;
+          connected[other] = true;
+          stack.push(other);
+        });
+      }
+      Object.keys(visibleIds).forEach(function(id) {
+        if (!connected[id]) delete visibleIds[id];
+      });
+    }
     var filteredNodes = allNodes.filter(function(n) { return visibleIds[n.id]; });
-    var filteredEdges = allEdges.filter(function(e) { return visibleIds[e.from] && visibleIds[e.to]; });
+    var filteredEdges = allEdges.filter(function(e) {
+      if (!visibleIds[e.from] || !visibleIds[e.to]) return false;
+      if (compliance === 'violation') return isViolationEdge(e);
+      if (compliance === 'compliant') return !isViolationEdge(e);
+      return true;
+    });
     try {
       var lb = document.getElementById('loadingBar');
       if (lb) { lb.style.display = 'none'; lb.style.opacity = '0'; }
@@ -2459,6 +2563,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   }
 
   function updatePatientSelectionVisuals() {
+    if (window._compareActive) return;
     var net = getNet();
     if (!net || !net.body || !net.body.data) return;
     var nodes = net.body.data.nodes;
@@ -2978,7 +3083,10 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       .replace(/\\b[Tt]he your records show\\b/gi, 'Your records show')
       .replace(/\\b[Tt]he your information suggests\\b/gi, 'Your information suggests')
       .replace(/\\s*Your clinician can explain what this means for you in everyday terms\\.?/gi, '')
-      .replace(/\\bYou are taking Spirometry\\b/gi, 'Spirometry (a breathing test) appears in your care plan')
+      .replace(/\\bYou are taking Spirometry\\b/gi, 'You have had spirometry — a breathing test noted in your care record')
+      .replace(/\\bYou are taking (BP monitoring|blood pressure monitoring)\\b/gi, 'You have had blood pressure monitoring, as noted in your care record')
+      .replace(/\\bYou are taking (joint imaging|Joint imaging)\\b/gi, 'You have had joint imaging, as noted in your care record')
+      .replace(/\\bYou are taking ([^,]+?(?:monitoring|imaging|test|procedure|spirometry|x-ray|screening))\\b/gi, 'You have had $1, as noted in your care record')
       .replace(/\\*{2,}/g, '')
       .replace(/^\\s*:\\s+/gm, '')
       .replace(/\\u2022\\s*:\\s*/g, '\\u2022 ')
@@ -3103,6 +3211,12 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
 
   function _friendlyDiagnosisTail(tail) {
     var t = _stripCodesTail((tail || '').replace(/\\s*Your clinician can explain what this means for you in everyday terms\\.?/gi, '').trim());
+    if (t.indexOf(',') >= 0) {
+      var parts = t.split(',').map(function(p) { return p.trim(); }).filter(Boolean);
+      if (parts.length > 1) {
+        return parts.map(function(p) { return _friendlyDiagnosisTail(p)[0]; }).filter(Boolean);
+      }
+    }
     var lower = t.toLowerCase();
     if (lower.indexOf('type 2 diabetes') >= 0 || lower.indexOf('type 2 diabetes mellitus') >= 0) {
       return ['You have Type 2 Diabetes, a condition that affects how your body controls blood sugar.'];
@@ -3118,6 +3232,9 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     }
     if (/\\basthma\\b/i.test(lower)) {
       return ['You have asthma, a condition where the airways can tighten and swell and produce extra mucus, which can cause wheezing or shortness of breath; care often includes trigger avoidance and inhaler plans.'];
+    }
+    if (/\\bosteoarthritis\\b|\\boa\\b/i.test(lower)) {
+      return ['You have osteoarthritis, a joint condition where cartilage wears down over time, which can cause pain and stiffness; care often includes pain relief, activity guidance, and sometimes joint imaging.'];
     }
     if (!t) return ['Your chart lists a condition your care team is managing.'];
     if (/\\byou have\\s+copd\\b/i.test(t)) {
@@ -3140,7 +3257,57 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
 
   function _looksLikeProcedureOrImagingName(name) {
     var u = (name || '').toLowerCase();
-    return /spirometry|pulmonary function|\\bpft\\b|x-ray|chest radiograph|ct scan|computed tomography|\\bmri\\b|ultrasound|echocardiogram|\\bekg\\b|\\becg\\b|stress test|colonoscopy|endoscopy|biopsy|mammogram|pap smear|bone density|dexa|holter/i.test(u);
+    return /spirometry|pulmonary function|\\bpft\\b|x-ray|chest radiograph|ct scan|computed tomography|\\bmri\\b|ultrasound|echocardiogram|\\bekg\\b|\\becg\\b|stress test|colonoscopy|endoscopy|biopsy|mammogram|pap smear|bone density|dexa|holter|bp monitoring|blood pressure monitoring|joint imaging|hba1c test|peak flow|iron studies|blood culture|psychological|counseling|procedure|imaging|monitoring/i.test(u);
+  }
+
+  function _isLikelyMedicationName(name) {
+    var u = (name || '').toLowerCase().trim();
+    if (!u) return false;
+    if (_looksLikeLabOrTest(u) || _looksLikeProcedureOrImagingName(u)) return false;
+    if (/\\b(tablet|capsule|injection|inhaler|ointment|cream)\\b/i.test(u)) return true;
+    if (/\\b(mg|mcg|units?)\\b/i.test(u)) return true;
+    if (/lisinopril|metformin|insulin|aspirin|warfarin|atorvastatin|amlodipine|omeprazole|ibuprofen|sertraline|antibiotic|nsaid|statin|beta.?blocker|ace inhibitor|saba|ics|iron|ferrous|salbutamol/i.test(u)) return true;
+    return true;
+  }
+
+  /** Procedures/tests: "had" when documented, "should have" when recommended but not done. */
+  function _friendlyProcedureLines(tail, context) {
+    context = context || 'documented';
+    var t = _stripCodesTail((tail || '').trim());
+    if (!t) {
+      if (context === 'recommended') return ['A test or procedure is recommended in your care plan.'];
+      return ['Your care record includes a test or procedure step.'];
+    }
+    if (/spirometry/i.test(t)) {
+      if (context === 'recommended') {
+        return ['Spirometry (a breathing test) is recommended in your care plan but is not documented in your record yet.'];
+      }
+      return ['You have had spirometry — a breathing test that shows how well your lungs move air.'];
+    }
+    if (/bp monitoring|blood pressure monitoring/i.test(t)) {
+      if (context === 'recommended') {
+        return ['Blood pressure monitoring is recommended in your care plan but is not documented in your record yet.'];
+      }
+      return ['You have had blood pressure monitoring, as noted in your care record.'];
+    }
+    if (/joint imaging/i.test(t)) {
+      if (context === 'recommended') {
+        return ['Joint imaging is recommended for your condition but is not documented in your record yet.'];
+      }
+      return ['You have had joint imaging, as noted in your care record.'];
+    }
+    if (/hba1c/i.test(t)) {
+      if (context === 'recommended') {
+        return ['An HbA1c test is recommended in your care plan but is not documented in your record yet.'];
+      }
+      return ['You have had an HbA1c test, which helps measure your average blood sugar over time.'];
+    }
+    var label = t.charAt(0).toUpperCase() + t.slice(1);
+    if (context === 'recommended') {
+      return [label + ' is recommended in your care plan but is not documented in your record yet.'];
+    }
+    var article = /^[aeiou]/i.test(t) ? 'an ' : 'a ';
+    return ['You have had ' + article + t.toLowerCase() + ', as noted in your care record.'];
   }
 
   function _friendlyLabTestLines(tail) {
@@ -3153,7 +3320,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     return ['You have had a lab test related to ' + shorty + ', which helps your team monitor your health.'];
   }
 
-  /** Single patient-friendly line for meds (no repeated “guidelines” lines here). */
+  /** Single patient-friendly line for meds (procedures routed separately — never "taking" a test). */
   function _friendlyMedicationLines(tail) {
     if (_looksLikeLabOrTest(tail)) return _friendlyLabTestLines(tail);
     var raw = (tail || '').trim().replace(/^drug:\\s*/i, '');
@@ -3163,13 +3330,11 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     segments.forEach(function (seg) {
       var t = seg.trim();
       if (!t) return;
-      if (_looksLikeProcedureOrImagingName(t) || _looksLikeProcedureOrImagingName(seg)) {
-        if (/spirometry/i.test(t)) {
-          out.push('Spirometry is a breathing test that measures how much air you move and how quickly; it helps monitor conditions like COPD or asthma. Your care record notes it as part of your plan.');
-        } else {
-          out.push(t.charAt(0).toUpperCase() + t.slice(1) + ' is a test or procedure in your care plan (not a daily medicine).');
-        }
-      } else if (/metformin/i.test(seg)) {
+      if (!_isLikelyMedicationName(t)) {
+        _friendlyProcedureLines(t, 'documented').forEach(function(l) { out.push(l); });
+        return;
+      }
+      if (/metformin/i.test(seg)) {
         out.push('You are taking Metformin, a common medication that helps control blood sugar levels.');
       } else {
         out.push('You are taking ' + t + ', as shown in your care record.');
@@ -3180,21 +3345,42 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
 
   function _friendlyProtocolExpectation(tail) {
     if (_looksLikeLabOrTest(tail)) return _friendlyLabTestLines(tail);
-    return _friendlyMedicationLines(tail);
+    var raw = (tail || '').trim();
+    if (!raw) return ['Your care plan lists a recommended treatment step.'];
+    var segments = raw.split(/[,;]/).map(function (p) { return p.trim(); }).filter(Boolean);
+    var out = [];
+    segments.forEach(function (seg) {
+      if (!_isLikelyMedicationName(seg)) {
+        _friendlyProcedureLines(seg, 'recommended').forEach(function(l) { out.push(l); });
+      } else if (/metformin/i.test(seg)) {
+        out.push('Metformin is recommended in your care plan for blood sugar control.');
+      } else {
+        out.push(seg.charAt(0).toUpperCase() + seg.slice(1) + ' is listed in your recommended care plan.');
+      }
+    });
+    return out.length ? out : ['Your care plan lists a recommended treatment step.'];
   }
 
   function _friendlyDocumentationActual(tail) {
     if (_looksLikeLabOrTest(tail)) return _friendlyLabTestLines(tail);
-    return _friendlyMedicationLines(tail);
+    var raw = (tail || '').trim();
+    if (!raw) return ['Your chart lists a treatment step your care team monitors.'];
+    var segments = raw.split(/[,;]/).map(function (p) { return p.trim(); }).filter(Boolean);
+    var out = [];
+    segments.forEach(function (seg) {
+      if (!_isLikelyMedicationName(seg)) {
+        _friendlyProcedureLines(seg, 'documented').forEach(function(l) { out.push(l); });
+      } else if (/metformin/i.test(seg)) {
+        out.push('You are taking Metformin, as shown in your care record.');
+      } else {
+        out.push('You are taking ' + seg + ', as shown in your care record.');
+      }
+    });
+    return out.length ? out : ['Your chart lists a treatment step your care team monitors.'];
   }
 
   function _friendlyProcedureTail(tail) {
-    var t = _stripCodesTail(tail);
-    if (!t) return ['Your care record includes a test or procedure step your team uses to monitor your health.'];
-    if (/spirometry/i.test(t)) {
-      return ['Your care includes spirometry — a breathing test that shows how well your lungs move air.'];
-    }
-    return ['Your care includes ' + t + ' — a test or procedure step noted in your record.'];
+    return _friendlyProcedureLines(tail, 'documented');
   }
 
   function _friendlyClinicalNoteTail(tail) {
@@ -3239,8 +3425,9 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     });
     rest.sort(function(a, b) {
       function rank(x) {
-        if (/^You are taking /i.test(x)) return 0;
-        if (/had an|HbA1c test|lab test|breathing test|is a test or procedure/i.test(x)) return 1;
+        if (/^You are taking /i.test(x)) return 1;
+        if (/^You have had |is recommended in your care plan/i.test(x)) return 0;
+        if (/had an|HbA1c test|lab test|breathing test/i.test(x)) return 0;
         return 2;
       }
       return rank(a) - rank(b);
@@ -3268,11 +3455,20 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var diabetes = cond.indexOf('diabetes') >= 0 || blob.indexOf('diabetes') >= 0 || blob.indexOf('metformin') >= 0 || blob.indexOf('blood sugar') >= 0;
     var scrubbed = _stripTreatmentFluff(lines);
     scrubbed = scrubbed.map(function(line) {
+      var m;
       if (/\\bYou are taking\\s+.+\\b(hba1c|a1c)\\b/i.test(line)) {
         return 'You have had an HbA1c test, which helps measure your average blood sugar over time.';
       }
       if (/\\bYou are taking\\s+spirometry\\b/i.test(line)) {
-        return 'Spirometry is a breathing test that measures how much air you move and how quickly; it helps monitor conditions like COPD or asthma. Your care record notes it as part of your plan.';
+        return 'You have had spirometry — a breathing test noted in your care record.';
+      }
+      m = line.match(/^You are taking\\s+(.+?),\\s*as shown in your care record\\.?$/i);
+      if (m && !_isLikelyMedicationName(m[1])) {
+        return _friendlyProcedureLines(m[1], 'documented')[0];
+      }
+      m = line.match(/^You are taking\\s+(.+?)\\s*$/i);
+      if (m && !_isLikelyMedicationName(m[1])) {
+        return _friendlyProcedureLines(m[1], 'documented')[0];
       }
       return line;
     });
@@ -3286,6 +3482,101 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     return _capLinesKeepClosing(scrubbed, 3);
   }
 
+  var _KNOWN_EVIDENCE_PREFIXES = {
+    'clinical severity': 1, 'diagnosis': 1, 'symptom': 1, 'medication': 1,
+    'protocol expectation': 1, 'documentation / actual': 1, 'clinical note': 1,
+    'procedure': 1, 'guideline procedure': 1, 'encounter procedure': 1,
+    'protocol issue': 1, 'lab order': 1, 'guideline medication': 1, 'prescription': 1,
+    'visit / provider link': 1, 'appointment': 1, 'follow-up': 1
+  };
+
+  function _isStubEvidenceLine(line) {
+    var t = (line || '').trim();
+    if (!t) return true;
+    if (/:\\s*$/.test(t)) return true;
+    if (/^(the\\s+)?patient\\b[^:]*\\bhas the following diseases?\\s*:?\\s*$/i.test(t)) return true;
+    if (/^(the\\s+)?patient\\b[^:]*\\bis treated with\\s*:?\\s*$/i.test(t)) return true;
+    if (/^has the following diseases?\\s*:?\\s*$/i.test(t)) return true;
+    if (/^is treated with\\s*:?\\s*$/i.test(t)) return true;
+    return false;
+  }
+
+  /** Drop empty stubs; merge "…diseases:" / "…treated with:" with the next bullet when present. */
+  function _normalizeEvidenceLines(ev) {
+    var out = [];
+    for (var i = 0; i < (ev || []).length; i++) {
+      var cur = String(ev[i] || '').trim();
+      if (!_isStubEvidenceLine(cur)) {
+        out.push(cur);
+        continue;
+      }
+      var next = i + 1 < ev.length ? String(ev[i + 1] || '').trim() : '';
+      if (!next || _isStubEvidenceLine(next)) continue;
+      if (/following diseases?/i.test(cur)) {
+        out.push('Diagnosis: ' + next);
+        i++;
+      } else if (/treated with/i.test(cur)) {
+        out.push('Documentation / actual: ' + next);
+        i++;
+      }
+    }
+    return out;
+  }
+
+  function _graphBackedEvidenceExtras(data) {
+    var extras = [];
+    var diseases = [];
+    var treatments = [];
+    var seenD = {};
+    var seenT = {};
+    function addD(name) {
+      var n = (name || '').trim();
+      if (!n || seenD[n.toLowerCase()]) return;
+      seenD[n.toLowerCase()] = true;
+      diseases.push(n);
+    }
+    function addT(name) {
+      var n = (name || '').trim();
+      if (!n || seenT[n.toLowerCase()]) return;
+      seenT[n.toLowerCase()] = true;
+      treatments.push(n);
+    }
+    (data.paths || []).forEach(function(p) {
+      var labels = p.labels || [];
+      var nodes = p.nodes || [];
+      for (var i = 0; i < nodes.length; i++) {
+        var nid = String(nodes[i] || '');
+        var lbl = labels[i] ? String(labels[i]).replace(/\\s*\\([^)]*\\)\\s*$/, '').trim() : '';
+        if (nid.indexOf('Disease:') === 0 && lbl) addD(lbl);
+        if (nid.indexOf('Drug:') === 0 && lbl) addT(lbl);
+        if (nid.indexOf('Procedure:') === 0 && lbl) addT(lbl);
+      }
+    });
+    var pid = null;
+    if (data && data.selected_patients && data.selected_patients.length) pid = data.selected_patients[0];
+    else if (typeof _patientContext !== 'undefined' && _patientContext && _patientContext.selected) pid = _patientContext.selected.pid;
+    else if (window.currentUser && window.currentUser.patientId) pid = window.currentUser.patientId;
+    if (pid && typeof _getConnectedByType === 'function') {
+      try {
+        var g = _getConnectedByType(pid);
+        (g.diseases || []).forEach(addD);
+        (g.drugs || []).forEach(addT);
+        (g.procedures || []).forEach(addT);
+      } catch (eG) {}
+    }
+    diseases.forEach(function(d) { extras.push('Diagnosis: ' + d); });
+    (data.actual_treatment || []).forEach(function(x) {
+      if (x) extras.push('Documentation / actual: ' + x);
+    });
+    if (!(data.actual_treatment || []).length) {
+      treatments.forEach(function(t) { extras.push('Documentation / actual: ' + t); });
+    }
+    (data.protocol_expected || []).forEach(function(x) {
+      if (x) extras.push('Protocol expectation: ' + x);
+    });
+    return extras;
+  }
+
   /**
    * Maps one evidence source line to patient-friendly category + short lines (no raw graph dumps).
    */
@@ -3293,9 +3584,24 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     var h = _patientSafeNormalize(_humanizeEvidenceLine(raw));
     var s = h;
     var colon = s.indexOf(':');
-    var prefix = colon >= 0 ? s.slice(0, colon).trim() : '';
-    var tail = colon >= 0 ? s.slice(colon + 1).trim() : s;
+    var prefix = '';
+    var tail = s;
+    if (colon >= 0) {
+      prefix = s.slice(0, colon).trim();
+      tail = s.slice(colon + 1).trim();
+      var pfxCheck = prefix.toLowerCase();
+      if (!_KNOWN_EVIDENCE_PREFIXES[pfxCheck] && pfxCheck.indexOf('relationship') !== 0) {
+        prefix = '';
+        tail = s;
+      }
+    }
     var pfx = prefix.trim().toLowerCase();
+    if (/following diseases?/i.test(s) && !tail) {
+      return { category: 'general', lines: [] };
+    }
+    if (/treated with/i.test(s) && !tail) {
+      return { category: 'general', lines: [] };
+    }
 
     if (/^retrieved context includes/i.test(s)) {
       return { category: 'general', lines: ['Your chart includes information from several places that relate to this question.'] };
@@ -3388,9 +3694,12 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   }
 
   function _buildEvidenceList(parsed, data) {
-    var ev = parsed.evidence.slice();
+    var ev = _normalizeEvidenceLines(parsed.evidence.slice());
     var seen = {};
     ev.forEach(function(e) { seen[String(e).toLowerCase()] = true; });
+    _graphBackedEvidenceExtras(data || {}).forEach(function(line) {
+      if (!seen[line.toLowerCase()]) { ev.push(line); seen[line.toLowerCase()] = true; }
+    });
     (data.protocol_expected || []).forEach(function(x) {
       var line = 'Protocol expectation: ' + x;
       if (!seen[line.toLowerCase()]) { ev.push(line); seen[line.toLowerCase()] = true; }
@@ -3648,9 +3957,66 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   }
   /* ===== Document Upload ===== */
   var _uploadExtractedData = null;
+
+  function getUploadTargetPatientId() {
+    if (_isPatientPortalUser() && window.currentUser && window.currentUser.patientId) {
+      return window.currentUser.patientId;
+    }
+    if (_patientContext && _patientContext.selected && _patientContext.selected.pid) {
+      return _patientContext.selected.pid;
+    }
+    return null;
+  }
+
+  function getUploadMode() {
+    return getUploadTargetPatientId() ? 'append' : 'create';
+  }
+
+  function updateUploadUiForRole() {
+    var labelEl = document.getElementById('uploadDocBtnLabel');
+    var mode = getUploadMode();
+    if (labelEl) {
+      if (_isPatientPortalUser()) labelEl.textContent = 'Upload my document';
+      else if (mode === 'append') {
+        var nm = (_patientContext && _patientContext.selected && _patientContext.selected.name) || getUploadTargetPatientId();
+        labelEl.textContent = 'Upload to chart';
+      } else labelEl.textContent = 'Import new patient';
+    }
+    var compareBtn = document.querySelector('.compare-btn');
+    if (compareBtn) compareBtn.style.display = _isPatientPortalUser() ? 'none' : '';
+  }
+
+  function refreshUploadModalChrome() {
+    var mode = getUploadMode();
+    var titleEl = document.getElementById('uploadModalTitle');
+    var bannerEl = document.getElementById('uploadTargetBanner');
+    var btn = document.getElementById('confirmPatientBtn');
+    var dropHint = document.querySelector('#uploadDropzone .hint');
+    if (mode === 'append') {
+      var pid = getUploadTargetPatientId();
+      var pname = (_patientContext && _patientContext.selected && _patientContext.selected.name) ||
+        (window.currentUser && window.currentUser.name) || pid;
+      var forPatient = _isPatientPortalUser();
+      if (titleEl) titleEl.textContent = forPatient ? 'Add document to your chart' : 'Add document to patient chart';
+      if (bannerEl) {
+        bannerEl.style.display = 'block';
+        bannerEl.textContent = (forPatient ? 'Your recent visit document will be added to ' : 'This document will be added to ')
+          + pname + ' (' + pid + '). New diagnoses, symptoms, and notes from the file will appear on the graph.';
+      }
+      if (btn) btn.textContent = forPatient ? 'Add to my chart' : 'Add to patient chart';
+      if (dropHint) dropHint.textContent = 'PDF or text from a recent visit — discharge summary, lab report, etc.';
+    } else {
+      if (titleEl) titleEl.textContent = 'Import new patient from document';
+      if (bannerEl) { bannerEl.style.display = 'none'; bannerEl.textContent = ''; }
+      if (btn) btn.textContent = 'Confirm & Create Patient';
+      if (dropHint) dropHint.textContent = 'PDF or text file — or click to browse';
+    }
+  }
+
   function openUploadModal() {
     document.getElementById('uploadModal').style.display = 'flex';
     resetUploadUI();
+    refreshUploadModalChrome();
   }
   function closeUploadModal() {
     document.getElementById('uploadModal').style.display = 'none';
@@ -3707,8 +4073,12 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     el.style.display = 'block';
   }
   function showUploadPreview(data) {
-    var html = '<h4>Patient Name</h4>';
-    html += '<input type="text" class="upload-name-input" id="uploadPatientName" value="' + ((data.patient_name || '').replace(/"/g, '&quot;')) + '" placeholder="Enter patient name">';
+    var appendMode = getUploadMode() === 'append';
+    var html = '';
+    if (!appendMode) {
+      html += '<h4>Patient Name</h4>';
+      html += '<input type="text" class="upload-name-input" id="uploadPatientName" value="' + ((data.patient_name || '').replace(/"/g, '&quot;')) + '" placeholder="Enter patient name">';
+    }
     if (data.age || data.sex) {
       html += '<h4>Demographics</h4><div class="tag-list">';
       if (data.age) html += '<span class="tag">Age: ' + data.age + '</span>';
@@ -3741,6 +4111,52 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     document.getElementById('uploadPreview').style.display = 'block';
     document.getElementById('uploadActions').style.display = 'flex';
   }
+  function confirmUploadDocument() {
+    if (!_uploadExtractedData) return;
+    if (getUploadMode() === 'append') confirmAppendToPatient();
+    else confirmCreatePatient();
+  }
+  window.confirmUploadDocument = confirmUploadDocument;
+
+  function confirmAppendToPatient() {
+    if (!_uploadExtractedData) return;
+    var pid = getUploadTargetPatientId();
+    if (!pid) {
+      showUploadError('No patient selected for this upload.');
+      return;
+    }
+    var btn = document.getElementById('confirmPatientBtn');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    document.getElementById('uploadError').style.display = 'none';
+    var apiUrl = (document.getElementById('aiApiUrl') && document.getElementById('aiApiUrl').value || 'http://localhost:8000').replace(/\\/$/, '');
+    var payload = JSON.parse(JSON.stringify(_uploadExtractedData));
+    fetch(apiUrl + '/patients/' + encodeURIComponent(pid) + '/append-document', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    .then(function(r) {
+      if (!r.ok) return r.json().then(function(e) { throw new Error(e.detail || 'Upload failed'); });
+      return r.json();
+    })
+    .then(function(result) {
+      populateFilterOptions();
+      syncPatientsFromBackend(function() {
+        loadPatientGraphFromBackend(pid, function() { applyPatientContext(); });
+      });
+      document.getElementById('uploadPreview').innerHTML = '<div class="upload-success"><strong>Document added to '
+        + (result.patient_name || result.patient_id) + '\\'s chart.</strong> New findings are on your graph.</div>';
+      document.getElementById('uploadActions').style.display = 'none';
+      setTimeout(closeUploadModal, 2400);
+    })
+    .catch(function(err) {
+      showUploadError(err.message || 'Failed to add document to chart.');
+      btn.disabled = false;
+      refreshUploadModalChrome();
+    });
+  }
+
   function confirmCreatePatient() {
     if (!_uploadExtractedData) return;
     var btn = document.getElementById('confirmPatientBtn');
@@ -4060,7 +4476,12 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
       body: JSON.stringify({ patient_ids: ids })
     })
     .then(function(r) { if (!r.ok) throw new Error('Server returned ' + r.status); return r.json(); })
-    .then(function(data) { showCompareResults(data); highlightCompareInGraph(data); })
+    .then(function(data) {
+      window._comparePatientIds = ids.slice();
+      window._compareActive = true;
+      showCompareResults(data);
+      applyCompareGraph(data, ids);
+    })
     .catch(function(err) {
       document.getElementById('compareResultsBody').innerHTML =
         '<p style="color:#dc2626;">Comparison failed: ' + err.message + '</p>';
@@ -4114,74 +4535,258 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     document.getElementById('compareResults').style.display = 'block';
   }
 
-  function highlightCompareInGraph(data) {
+  function _compareNodeKey(n) {
+    if (!n) return '';
+    return (n.node_type || 'Unknown') + ':' + (n.id_prop != null ? String(n.id_prop) : String(n.id));
+  }
+
+  function mergeGraphPayloads(payloads) {
+    var nodeById = {};
+    var edges = [];
+    var edgeSeen = {};
+    (payloads || []).forEach(function(p) {
+      (p.nodes || []).forEach(function(n) {
+        if (!nodeById[n.id]) nodeById[n.id] = n;
+      });
+      (p.relationships || []).forEach(function(e) {
+        var k = e.from + '|' + e.to + '|' + (e.rel_type || e.label || '');
+        if (!edgeSeen[k]) {
+          edgeSeen[k] = true;
+          edges.push(e);
+        }
+      });
+    });
+    return { nodes: Object.keys(nodeById).map(function(k) { return nodeById[k]; }), relationships: edges };
+  }
+
+  function applyCompareGraph(data, compareIds) {
+    var graph = data.graph || null;
+    function paintMerged(merged, done) {
+      window._compareActive = true;
+      window._allNodes = merged.nodes || [];
+      window._allEdges = merged.relationships || [];
+      var net = getNet();
+      if (net) {
+        net.setData({
+          nodes: new vis.DataSet(window._allNodes),
+          edges: new vis.DataSet(window._allEdges)
+        });
+        ensureGraphInteraction(net);
+      }
+      if (done) done();
+    }
+    if (graph && graph.nodes && graph.nodes.length) {
+      paintMerged(graph, function() { highlightCompareInGraph(data, compareIds); });
+      return;
+    }
+    loadMergedCompareGraph(compareIds, function() {
+      highlightCompareInGraph(data, compareIds);
+    });
+  }
+
+  function loadMergedCompareGraph(patientIds, done) {
+    var apiUrl = (document.getElementById('aiApiUrl') && document.getElementById('aiApiUrl').value || 'http://localhost:8000').replace(/\\/$/, '');
+    if (!patientIds || patientIds.length < 2) {
+      if (done) done();
+      return;
+    }
+    fetch(apiUrl + '/compare-patients', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patient_ids: patientIds })
+    })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(payload) {
+        if (payload && payload.graph && payload.graph.nodes && payload.graph.nodes.length) {
+          window._compareActive = true;
+          window._allNodes = payload.graph.nodes;
+          window._allEdges = payload.graph.relationships || [];
+          var net = getNet();
+          if (net) {
+            net.setData({
+              nodes: new vis.DataSet(window._allNodes),
+              edges: new vis.DataSet(window._allEdges)
+            });
+            ensureGraphInteraction(net);
+          }
+          if (done) done();
+          return;
+        }
+        return Promise.all(patientIds.map(function(pid) {
+          return fetch(apiUrl + '/patient-graph/' + encodeURIComponent(pid))
+            .then(function(r) {
+              if (!r.ok) throw new Error('Graph load failed for ' + pid);
+              return r.json();
+            });
+        })).then(function(payloads) {
+          var merged = mergeGraphPayloads(payloads);
+          window._compareActive = true;
+          window._allNodes = merged.nodes;
+          window._allEdges = merged.relationships;
+          var net = getNet();
+          if (net) {
+            net.setData({
+              nodes: new vis.DataSet(merged.nodes),
+              edges: new vis.DataSet(merged.relationships)
+            });
+            ensureGraphInteraction(net);
+          }
+          if (done) done();
+        });
+      })
+      .catch(function(err) {
+        console.error('loadMergedCompareGraph:', err);
+        var lab = document.getElementById('filterLabel');
+        if (lab) lab.textContent = 'Comparison graph: ' + (err.message || 'load failed');
+        if (done) done();
+      });
+  }
+
+  function _pidInCompareList(pid, compareIds) {
+    var s = String(pid || '').toLowerCase();
+    for (var i = 0; i < compareIds.length; i++) {
+      if (String(compareIds[i]).toLowerCase() === s) return true;
+    }
+    return false;
+  }
+
+  function highlightCompareInGraph(data, compareIds) {
     var net = (typeof getNet === 'function') ? getNet() : null;
     if (!net || !window._allNodes || !window._allEdges) return;
     _compareOriginalNodes = window._allNodes.slice();
     _compareOriginalEdges = window._allEdges.slice();
+    window._compareActive = true;
 
-    var commonSet = {};
-    (data.common_node_ids || []).forEach(function(s) {
-      var id = s.split(':').slice(1).join(':');
-      commonSet[id] = true;
-    });
+    compareIds = compareIds || window._comparePatientIds || data.patient_ids ||
+      (data.patients || []).map(function(p) { return p.patient_id; });
+
+    var commonKeys = {};
+    (data.common_node_ids || []).forEach(function(s) { commonKeys[s] = true; });
 
     var patientIdProps = {};
-    (data.patients || []).forEach(function(p) { patientIdProps[p.patient_id] = true; });
-    var isolationCmp = getEffectiveIsolationPatientId();
-    if (isolationCmp) {
-      patientIdProps = {};
-      patientIdProps[isolationCmp] = true;
-    }
+    compareIds.forEach(function(pid) { patientIdProps[String(pid)] = true; });
+
+    var baseNodes = window._allNodes;
+    var baseEdges = window._allEdges;
 
     var patientVisIds = {};
-    var nodeById = {};
-    var baseNodesForCompare = window._allNodes;
-    var baseEdgesForCompare = window._allEdges;
-    baseNodesForCompare.forEach(function(n) {
-      nodeById[n.id] = n;
-      if (n.node_type === 'Patient' && patientIdProps[n.id_prop]) patientVisIds[n.id] = true;
+    var patientIndexByPid = {};
+    compareIds.forEach(function(pid, idx) { patientIndexByPid[String(pid).toLowerCase()] = idx; });
+
+    baseNodes.forEach(function(n) {
+      if (n.node_type === 'Patient' && _pidInCompareList(n.id_prop, compareIds)) {
+        patientVisIds[n.id] = true;
+      }
+    });
+
+    var commonVisIds = {};
+    baseNodes.forEach(function(n) {
+      if (commonKeys[_compareNodeKey(n)]) commonVisIds[n.id] = true;
     });
 
     var visibleIds = {};
     Object.keys(patientVisIds).forEach(function(id) { visibleIds[id] = true; });
-    var relevantEdges = [];
-    baseEdgesForCompare.forEach(function(e) {
+    baseEdges.forEach(function(e) {
       if (patientVisIds[e.from] || patientVisIds[e.to]) {
-        relevantEdges.push(e);
         visibleIds[e.from] = true;
         visibleIds[e.to] = true;
       }
     });
 
+    var spread = 380;
+    var nCompare = compareIds.length;
+
     var filteredNodes = [];
-    baseNodesForCompare.forEach(function(n) {
+    baseNodes.forEach(function(n) {
       if (!visibleIds[n.id]) return;
       var c = JSON.parse(JSON.stringify(n));
-      var ip = n.id_prop || n.id;
-      if (n.node_type === 'Patient' && patientIdProps[ip]) {
-        c.color = { background: '#3b82f6', border: '#2563eb' }; c.size = 30;
-        c.font = { color: '#fff', size: 14, bold: true };
-      } else if (commonSet[ip]) {
-        c.color = { background: '#f59e0b', border: '#d97706' }; c.size = 24;
-        c.font = { color: '#78350f', size: 13, bold: true };
+      var isPatient = n.node_type === 'Patient' && _pidInCompareList(n.id_prop, compareIds);
+      var isCommon = !!commonVisIds[n.id];
+      if (isPatient) {
+        var pidx = patientIndexByPid[String(n.id_prop).toLowerCase()];
+        if (pidx == null) pidx = 0;
+        c.x = (pidx - (nCompare - 1) / 2) * spread;
+        c.y = 0;
+        c.color = { background: '#3b82f6', border: '#1e40af', highlight: { background: '#2563eb', border: '#1e3a8a' } };
+        c.size = 34;
+        c.font = { color: '#ffffff', size: 14, bold: true, strokeWidth: 0 };
+        c.borderWidth = 3;
+        c.opacity = 1;
+        c.label = (c.full_label || c.label || n.id_prop) + '\\n(' + n.id_prop + ')';
+      } else if (isCommon) {
+        c.color = { background: '#f59e0b', border: '#b45309', highlight: { background: '#fbbf24', border: '#92400e' } };
+        c.size = 28;
+        c.font = { color: '#78350f', size: 13, bold: true, strokeWidth: 2, strokeColor: '#fffbeb' };
+        c.borderWidth = 3;
+        c.opacity = 1;
+        c.title = (c.title || c.full_label || '') + '\\n\\nShared by all compared patients';
+      } else {
+        c.color = { background: '#e2e8f0', border: '#94a3b8', highlight: { background: '#cbd5e1', border: '#64748b' } };
+        c.size = Math.max(18, (n.size || 22) - 2);
+        c.font = { color: '#64748b', size: 11, face: 'Inter, system-ui, sans-serif', strokeWidth: 0 };
+        c.borderWidth = 1.5;
+        c.opacity = 0.78;
+        c.title = (c.title || c.full_label || '') + '\\n\\nUnique (not shared by every selected patient)';
       }
       filteredNodes.push(c);
     });
 
-    var filteredEdges = relevantEdges.filter(function(e) { return visibleIds[e.from] && visibleIds[e.to]; });
+    var filteredEdges = [];
+    baseEdges.forEach(function(e) {
+      if (!visibleIds[e.from] || !visibleIds[e.to]) return;
+      var c = JSON.parse(JSON.stringify(e));
+      var linksPatientToCommon =
+        (patientVisIds[e.from] && commonVisIds[e.to]) ||
+        (patientVisIds[e.to] && commonVisIds[e.from]);
+      var touchesPatient = patientVisIds[e.from] || patientVisIds[e.to];
+      if (linksPatientToCommon) {
+        c.width = 3.2;
+        c.color = { color: '#ea580c', highlight: '#c2410c', hover: '#f97316' };
+        c.opacity = 1;
+      } else if (touchesPatient) {
+        c.width = 1.5;
+        c.color = { color: 'rgba(100,116,139,0.65)', highlight: '#64748b', hover: '#475569' };
+        c.opacity = 0.7;
+      } else {
+        c.width = 1;
+        c.color = { color: 'rgba(203,213,225,0.35)', highlight: '#94a3b8' };
+        c.opacity = 0.35;
+      }
+      filteredEdges.push(c);
+    });
 
+    try { clearEgoHighlight(); } catch (e0) {}
     net.setData({
       nodes: new vis.DataSet(filteredNodes),
       edges: new vis.DataSet(filteredEdges)
     });
-    net.setOptions({ physics: { enabled: true } });
-    net.once('stabilized', function() { net.setOptions({ physics: { enabled: false } }); net.fit({ animation: true }); });
-    document.getElementById('filterLabel').textContent = 'Showing: Patient comparison';
+    net.setOptions({
+      physics: {
+        enabled: true,
+        solver: 'forceAtlas2Based',
+        forceAtlas2Based: {
+          gravitationalConstant: -120,
+          centralGravity: 0.008,
+          springLength: 200,
+          avoidOverlap: 0.9
+        },
+        stabilization: { iterations: 180, updateInterval: 25 }
+      }
+    });
+    net.once('stabilizationIterationsDone', function() {
+      try { net.setOptions({ physics: { enabled: false } }); } catch (e) {}
+      try { if (net.fit) net.fit({ animation: { duration: 400 } }); } catch (e2) {}
+    });
+    var names = compareIds.join(', ');
+    var nCommon = (data.common_node_ids || []).length;
+    var nPatients = Object.keys(patientVisIds).length;
+    document.getElementById('filterLabel').textContent =
+      'Comparison: ' + names + ' (' + nPatients + ' patients) — orange = shared, gray = unique';
   }
 
   function closeComparison() {
     document.getElementById('compareResults').style.display = 'none';
+    window._compareActive = false;
     if (_compareOriginalNodes && _compareOriginalEdges) {
       var net = (typeof getNet === 'function') ? getNet() : null;
       if (net) {
@@ -5271,7 +5876,12 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   }
   window.changePatient = changePatient;
 
+  function _isPatientPortalUser() {
+    return !!(window.currentUser && window.currentUser.role === 'patient');
+  }
+
   function clearGlobalPatient() {
+    if (_isPatientPortalUser()) return;
     if (window.currentUser && window.currentUser.patientId) {
       var pid = window.currentUser.patientId;
       var pts = _getAllPatientNodes();
@@ -5299,6 +5909,12 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   function renderViewingBar() {
     var bar = document.getElementById('viewingBar');
     if (!bar) return;
+    var isPatientUser = _isPatientPortalUser();
+    if (isPatientUser && !_patientContext.selected) {
+      bar.className = 'viewing-bar hidden';
+      bar.innerHTML = '';
+      return;
+    }
     bar.className = 'viewing-bar';
     if (!_patientContext.selected) {
       bar.innerHTML = '<span class="viewing-label">Viewing:</span>'
@@ -5306,13 +5922,17 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
         + '<button class="viewing-change" onclick="changePatient()">Select a patient</button>';
       return;
     }
-    bar.innerHTML = '<span class="viewing-label">Viewing:</span>'
+    var html = '<span class="viewing-label">Viewing:</span>'
       + '<span class="viewing-patient">' + _patientContext.selected.name + ' (' + _patientContext.selected.pid + ')</span>'
-      + '<button class="viewing-change" onclick="openTimeline(\\'' + _patientContext.selected.pid + '\\')" style="color:#3b82f6;text-decoration:none;font-weight:600;">View Timeline</button>'
-      + '<button class="viewing-change" onclick="clearGlobalPatient()">Show all patients</button>';
+      + '<button class="viewing-change" onclick="openTimeline(\\'' + _patientContext.selected.pid + '\\')" style="color:#3b82f6;text-decoration:none;font-weight:600;">View Timeline</button>';
+    if (!isPatientUser) {
+      html += '<button class="viewing-change" onclick="clearGlobalPatient()">Show all patients</button>';
+    }
+    bar.innerHTML = html;
   }
 
   function filterGraphToPatient() {
+    if (window._compareActive) return;
     var net = getNet();
     if (!net || !net.body || !net.body.data) return;
     try { clearEgoHighlight(); } catch (e) {}
@@ -5336,6 +5956,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
   }
 
   function applyPatientContext() {
+    updateUploadUiForRole();
     renderViewingBar();
     filterGraphToPatient();
     var pid = _patientContext.selected ? _patientContext.selected.pid : null;
@@ -5376,7 +5997,7 @@ def _sidebar_and_script(stats: dict, explanations: dict) -> str:
     function attachToGraph() {
       var net = getNet();
       if (net) {
-        restrictWheelZoomUnlessModifier(net);
+        ensureGraphInteraction(net);
         if (!window._graphHooksDone) {
           window._graphHooksDone = true;
           net.on('click', function(params) {

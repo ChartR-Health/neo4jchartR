@@ -5,6 +5,7 @@ Uses neo4j_ops and neo4j_connect.run_query.
 """
 from typing import Any
 
+from neo4j_config import USE_GRAPH_DEMO
 from neo4j_ops import get_patient_clinical_state, get_sepsis_guidelines, get_patients_with_clinical_state
 from neo4j_connect import run_query
 
@@ -66,16 +67,49 @@ def run_sepsis_guidelines(patient_id: str) -> dict[str, Any]:
     vaso = state.get("vasopressors_active")
 
     violations = []
-    # High SOFA (>= threshold) -> should have antibiotics, cultures, consider vasopressors if MAP low
+    violations_structured = []
+
     if sofa is not None and sofa >= sofa_threshold:
         if not abx:
-            violations.append(f"SOFA {sofa} >= {sofa_threshold}: antibiotics not active (recommended within 1h).")
+            text = f"SOFA {sofa} >= {sofa_threshold}: antibiotics not active (recommended within 1h)."
+            violations.append(text)
+            violations_structured.append({
+                "text": text,
+                "severity": "critical",
+                "reason": f"SOFA score of {sofa} indicates organ dysfunction (threshold >= {sofa_threshold}). "
+                          "Broad-spectrum antibiotics should be administered within 1 hour of sepsis recognition.",
+            })
         if not cultures and abx:
-            violations.append("Blood cultures should be ordered before or with first antibiotic dose.")
+            text = "Blood cultures should be ordered before or with first antibiotic dose."
+            violations.append(text)
+            violations_structured.append({
+                "text": text,
+                "severity": "warning",
+                "reason": "Blood cultures help identify the causative pathogen and guide targeted therapy. "
+                          "They should be drawn before antibiotics when possible to avoid false negatives.",
+            })
     if lactate is not None and lactate > lactate_threshold and not abx:
-        violations.append(f"Lactate {lactate} > {lactate_threshold} mmol/L: antibiotics recommended.")
+        text = f"Lactate {lactate} > {lactate_threshold} mmol/L: antibiotics recommended."
+        violations.append(text)
+        severity = "critical" if lactate > 4 else "warning"
+        violations_structured.append({
+            "text": text,
+            "severity": severity,
+            "reason": f"Lactate of {lactate} mmol/L indicates tissue hypoperfusion. "
+                      + ("Levels > 4 mmol/L are associated with high mortality and require urgent intervention. " if lactate > 4 else "")
+                      + "Antibiotics address potential septic source.",
+        })
     if map_val is not None and map_val < map_threshold and not vaso:
-        violations.append(f"MAP {map_val} < {map_threshold} mmHg: consider vasopressors if refractory to fluids.")
+        text = f"MAP {map_val} < {map_threshold} mmHg: consider vasopressors if refractory to fluids."
+        violations.append(text)
+        severity = "critical" if map_val < 55 else "warning"
+        violations_structured.append({
+            "text": text,
+            "severity": severity,
+            "reason": f"MAP of {map_val} mmHg indicates hypotension (target >= {map_threshold} mmHg). "
+                      + ("MAP < 55 mmHg is associated with acute kidney injury and increased mortality. " if map_val < 55 else "")
+                      + "Vasopressors (norepinephrine first-line) are recommended if fluid-refractory.",
+        })
 
     compliance = len(violations) == 0
 
@@ -133,6 +167,7 @@ def run_sepsis_guidelines(patient_id: str) -> dict[str, Any]:
         "patient_id": patient_id,
         "patient_name": patient_name,
         "violations": violations,
+        "violations_structured": violations_structured,
         "compliance": compliance,
         "clinical_state": state,
         "guideline": guideline_export,
@@ -156,6 +191,8 @@ def sync_violations_to_neo4j() -> int:
     Sepsis ids: V_{patient_id}_{index}. Disease ids: V_D_{patient_id}_{disease_id}_{index}.
     Returns count of violation nodes created.
     """
+    if USE_GRAPH_DEMO:
+        return 0
     run_query("MATCH (v:Violation) DETACH DELETE v")
     count = 0
     # Sepsis guideline violations
@@ -164,17 +201,25 @@ def sync_violations_to_neo4j() -> int:
         if r.get("compliance"):
             continue
         pid = r.get("patient_id")
-        violations = r.get("violations") or []
-        for i, vtext in enumerate(violations):
+        structured = r.get("violations_structured") or []
+        plain = r.get("violations") or []
+        for i, vtext in enumerate(plain):
             vid = f"V_{pid}_{i}"
+            sv = structured[i] if i < len(structured) else {}
             run_query(
                 """
                 MATCH (p:Patient {id: $pid})
-                CREATE (v:Violation {id: $vid, description: $description, source: 'sepsis'})
+                CREATE (v:Violation {id: $vid, description: $description, source: 'sepsis',
+                        severity: $severity, reason: $reason})
                 CREATE (p)-[:HAS_VIOLATION]->(v)
                 RETURN v.id
                 """,
-                {"pid": pid, "vid": vid, "description": (vtext or "")[:500]},
+                {
+                    "pid": pid, "vid": vid,
+                    "description": (vtext or "")[:500],
+                    "severity": sv.get("severity", "warning"),
+                    "reason": (sv.get("reason") or "")[:500],
+                },
             )
             count += 1
     # Disease protocol violations (wrong/missing drug or procedure)
@@ -184,18 +229,27 @@ def sync_violations_to_neo4j() -> int:
         pid = r.get("patient_id")
         did = r.get("disease_id")
         dname = r.get("disease_name") or did
-        violations = r.get("violations") or []
-        for i, vtext in enumerate(violations):
+        structured = r.get("violations_structured") or []
+        plain = r.get("violations") or []
+        for i, vtext in enumerate(plain):
             vid = f"V_D_{pid}_{did}_{i}"
-            desc = (vtext or "")[:500]
+            sv = structured[i] if i < len(structured) else {}
             run_query(
                 """
                 MATCH (p:Patient {id: $pid})
-                CREATE (v:Violation {id: $vid, description: $description, source: 'protocol', disease_id: $did, disease_name: $dname})
+                CREATE (v:Violation {id: $vid, description: $description, source: 'protocol',
+                        disease_id: $did, disease_name: $dname,
+                        severity: $severity, reason: $reason})
                 CREATE (p)-[:HAS_VIOLATION]->(v)
                 RETURN v.id
                 """,
-                {"pid": pid, "vid": vid, "description": desc, "did": did, "dname": dname},
+                {
+                    "pid": pid, "vid": vid,
+                    "description": (vtext or "")[:500],
+                    "did": did, "dname": dname,
+                    "severity": sv.get("severity", "warning"),
+                    "reason": (sv.get("reason") or "")[:500],
+                },
             )
             count += 1
     return count

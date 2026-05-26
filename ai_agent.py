@@ -72,8 +72,122 @@ from neo4j_ops import (
     get_patients_with_clinical_state,
     get_sepsis_guidelines,
     get_patient_clinical_state,
+    get_patients_for_comparison,
 )
 from ai_compliance import run_compliance_check, check_patient_compliance
+
+
+# -------- LLM: graph-first reasoning & stable structure (prompts only) --------
+
+_LLM_TEMPERATURE = 0.2
+
+_STRUCTURED_SECTIONS_USER_SUFFIX = (
+    "\n\nOutput format (required — use these exact headings, in order):\n"
+    "## Conclusion\n"
+    "One short paragraph grounded in the context above.\n\n"
+    "## Evidence\n"
+    "Bullet list. Each bullet MUST cite concrete graph-backed facts from the context "
+    "(e.g. diseases/drugs/procedures/violations/symptoms/clinical values with relationship intent: "
+    "HAS_DISEASE, HAS_SYMPTOM, HAS_VIOLATION, HAS_CLINICAL_STATE, TREATED_WITH, HAD_PROCEDURE). "
+    "Do not list evidence that is only generic medical knowledge with no support in context.\n\n"
+    "## Explanation\n"
+    "Brief reasoning that connects Evidence to the question; name concrete gaps when supported by context "
+    "(for example missing recommended drugs or tests such as spirometry), and avoid deferring to "
+    "\"your clinician will explain\" instead of summarizing what the record shows.\n"
+)
+
+
+def _data_priority_preamble() -> list[str]:
+    """Prepended to every ask_agent LLM context — establishes graph > notes > general knowledge."""
+    return [
+        "=== DATA PRIORITY (mandatory) ===",
+        "1. PRIMARY: Neo4j graph facts in this context (relationships such as HAS_DISEASE, HAS_SYMPTOM, "
+        "HAS_VIOLATION, HAS_CLINICAL_STATE, TREATED_WITH, HAD_PROCEDURE, VISITS, HAS_NOTE).",
+        "2. SECONDARY: Verbatim patient notes / encounter text included below.",
+        "3. GENERAL KNOWLEDGE: Only when it does not contradict (1) or (2). Never invent patient-specific facts.",
+        "=== END DATA PRIORITY ===",
+        "",
+    ]
+
+
+def _graph_grounding_prompt_lines(patient_ids: list[str]) -> list[str]:
+    """
+    Explicit graph edges for the LLM — improves coverage of symptoms, violations, and clinical state
+    as stored in Neo4j (same shapes as the visualization graph).
+    """
+    ids = []
+    for p in patient_ids or []:
+        n = _normalize_patient_id(p) or p
+        if n and n not in ids:
+            ids.append(n)
+    if not ids:
+        return []
+    try:
+        rows = get_patients_for_comparison(ids)
+    except Exception:
+        return []
+    lines: list[str] = [
+        "Authoritative graph edges for selected patient(s) (use in Evidence; name the relationship type):",
+    ]
+    for row in rows:
+        pid = row.get("patient_id")
+        pname = row.get("patient_name") or pid
+        lines.append(f"  Patient {pid} ({pname}):")
+        for d in row.get("diseases") or []:
+            did, dnm = d.get("id"), d.get("name")
+            lines.append(f"    • (Patient)-[:HAS_DISEASE]->(Disease:{did}) — {dnm or did}")
+        for s in row.get("symptoms") or []:
+            sid, snm = s.get("id"), s.get("name")
+            lines.append(f"    • (Patient)-[:HAS_SYMPTOM]->(Symptom:{sid}) — {snm or sid}")
+        for v in row.get("violations") or []:
+            lines.append(f"    • (Patient)-[:HAS_VIOLATION]->(Violation) — {v}")
+        cs = row.get("clinical_state")
+        if cs:
+            lines.append(
+                "    • (Patient)-[:HAS_CLINICAL_STATE]->(ClinicalState) — "
+                f"SOFA={cs.get('sofa_score')}, MAP={cs.get('map')}, lactate={cs.get('lactate')}, "
+                f"GCS={cs.get('gcs')}, creatinine={cs.get('creatinine')}"
+            )
+    lines.append("")
+    return lines
+
+
+def _locked_patient_context_header(patient_id: str, display_name: str) -> str:
+    """Unmistakable scope header for a single patient’s LLM block (no cross-patient merge)."""
+    pid = _normalize_patient_id(patient_id) or patient_id
+    dn = display_name or pid
+    return (
+        "╔══════════════════════════════════════════════════════════════════════════════╗\n"
+        f"║ SINGLE-PATIENT_SCOPE: patient_id={pid}  display_name={dn}\n"
+        "║ RULE: Clinical facts below apply ONLY to this Patient node and its outgoing\n"
+        "║       relationships (HAS_DISEASE, HAS_SYMPTOM, HAS_VIOLATION, HAS_CLINICAL_STATE,\n"
+        "║       TREATED_WITH, HAD_PROCEDURE, HAS_NOTE, etc.).\n"
+        "║ NEVER attribute diseases, drugs, symptoms, labs, notes, or violations from\n"
+        "║ another patient id. If the question names another patient, respond using ONLY\n"
+        f"║ data for patient_id={pid} and state that your context is scoped to {pid}.\n"
+        "╚══════════════════════════════════════════════════════════════════════════════╝\n"
+    )
+
+
+def _comparison_context_header(patient_ids: list[str], name_by_pid: dict[str, str]) -> str:
+    """Explicit allow-list of patients for comparison mode (prevents extra patients)."""
+    lines = [
+        "╔══════════════════════════════════════════════════════════════════════════════╗",
+        "║ MULTI-PATIENT_COMPARISON_MODE",
+        "║ You may ONLY discuss these patient ids with facts drawn from their sections below:",
+    ]
+    for p in patient_ids:
+        pid = _normalize_patient_id(p) or p
+        nm = name_by_pid.get(pid) or name_by_pid.get(p) or pid
+        lines.append(f"║   • {pid} — {nm}")
+    lines.extend(
+        [
+            "║ Do not add clinical facts for any other patient id. Do not merge timelines.",
+            "╚══════════════════════════════════════════════════════════════════════════════╝",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 # -------- Helpers: normalize patient id (P001 vs P1) --------
@@ -217,6 +331,198 @@ def analyze_patient_protocol(patient_id: str) -> dict[str, Any]:
     context["compliance_results"] = results
     context["has_violation"] = any(not (r.get("compliant") is True) for r in results)
     return context
+
+
+_SEPSIS_FOCUS_RE = re.compile(
+    r"\b(sepsis|septic|sofa|qsofa|esofa|map|lactate|vasopressor|vasopressors|blood culture|blood cultures|cultures|hypotension|antibiotic|antibiotics)\b",
+    re.IGNORECASE,
+)
+
+
+def _focus_matches_disease(question: str, disease_name: str | None, disease_id: str | None) -> bool:
+    q = (question or "").strip().lower()
+    if not q:
+        return False
+    name = (disease_name or "").strip().lower()
+    did = (disease_id or "").strip().lower()
+    if did and did in q:
+        return True
+    if name and name in q:
+        return True
+    if name:
+        compact = re.sub(r"[^a-z0-9]+", " ", name).strip()
+        if compact and compact in q:
+            return True
+    return False
+
+
+def _scoped_compliance_result(
+    analysis: dict[str, Any],
+    disease_id: str | None,
+    disease_name: str | None = None,
+) -> dict[str, Any] | None:
+    for r in analysis.get("compliance_results") or []:
+        if disease_id and r.get("disease_id") == disease_id:
+            return r
+        if disease_name and (r.get("disease_name") or "").strip().lower() == (disease_name or "").strip().lower():
+            return r
+    return None
+
+
+def _infer_focus_condition(question: str, summary: dict[str, Any]) -> dict[str, Any] | None:
+    ctx = summary.get("context") or {}
+    diseases = ctx.get("diseases") or []
+    analysis = summary.get("analysis") or {}
+    clinical_state = summary.get("clinical_state")
+    q = (question or "").strip()
+
+    if clinical_state is not None and _SEPSIS_FOCUS_RE.search(q):
+        return {"type": "sepsis", "id": "sepsis", "name": "Sepsis-related care"}
+
+    matched = []
+    for d in diseases:
+        did = d.get("disease_id")
+        dname = d.get("disease_name") or did
+        if _focus_matches_disease(q, dname, did):
+            matched.append({"type": "disease", "id": did, "name": dname})
+    if len(matched) == 1:
+        return matched[0]
+
+    if len(diseases) == 1:
+        d = diseases[0]
+        return {"type": "disease", "id": d.get("disease_id"), "name": d.get("disease_name") or d.get("disease_id")}
+
+    violating = [
+        r for r in (analysis.get("compliance_results") or [])
+        if not (r.get("compliant") is True) and (r.get("violations") or [])
+    ]
+    unique_violating = {(r.get("disease_id"), r.get("disease_name") or r.get("disease_id")) for r in violating if r.get("disease_id")}
+    if len(unique_violating) == 1:
+        did, dname = next(iter(unique_violating))
+        return {"type": "disease", "id": did, "name": dname}
+
+    if clinical_state is not None and not diseases:
+        return {"type": "sepsis", "id": "sepsis", "name": "Sepsis-related care"}
+
+    return None
+
+
+def _build_focus_context_block(summary: dict[str, Any], focus: dict[str, Any] | None) -> str:
+    if not focus:
+        return ""
+    pname = summary.get("name") or summary.get("pid")
+    pid = summary.get("pid")
+    analysis = summary.get("analysis") or {}
+    lines = [
+        "=== FOCUS CONDITION (mandatory) ===",
+        f"Selected patient: {pname} ({pid})",
+    ]
+    if focus.get("type") == "sepsis":
+        sepsis_info = summary.get("sepsis_info") or {}
+        state = summary.get("clinical_state") or {}
+        actual = []
+        if state.get("antibiotics_active"):
+            actual.append("Antibiotics active")
+        if state.get("cultures_ordered"):
+            actual.append("Blood cultures ordered")
+        if state.get("vasopressors_active"):
+            actual.append("Vasopressors active")
+        lines.extend([
+            "Condition scope: Sepsis-related care only.",
+            "When discussing violations, recommendations, evidence, and actual treatment, use ONLY sepsis-related facts.",
+            "Ignore disease-specific protocol violations unless the user explicitly asks about another disease.",
+            "Expected sepsis care: Broad-spectrum antibiotics within 1 hour; blood cultures; vasopressors if MAP < 65 mmHg and fluid-refractory.",
+            "Actual sepsis-related care: " + (", ".join(actual) if actual else "None recorded."),
+            "Sepsis violations: " + ("; ".join(sepsis_info.get("violations") or []) if sepsis_info and not sepsis_info.get("compliance") else "None."),
+        ])
+    else:
+        did = focus.get("id")
+        dname = focus.get("name") or did
+        scoped = _scoped_compliance_result(analysis, did, dname) or {}
+        expected = [x for x in [scoped.get("recommended_drug_name"), scoped.get("recommended_procedure_name")] if x]
+        actual = list(dict.fromkeys((scoped.get("actual_drug_names") or []) + (scoped.get("actual_procedure_names") or [])))
+        lines.extend([
+            f"Condition scope: {dname} ({did}).",
+            "When discussing violations, recommendations, evidence, and actual treatment, use ONLY this disease.",
+            "Ignore sepsis-related findings unless the user explicitly asks about sepsis, MAP, lactate, SOFA, vasopressors, antibiotics, or blood cultures.",
+            "Expected protocol for this disease: " + (", ".join(expected) if expected else "No protocol items found."),
+            "Actual treatment for this disease: " + (", ".join(actual) if actual else "None recorded."),
+            "Violations for this disease: " + ("; ".join(scoped.get("violations") or []) if scoped and not (scoped.get("compliant") is True) else "None."),
+        ])
+    lines.append("=== END FOCUS CONDITION ===")
+    return "\n".join(lines)
+
+
+def _build_scoped_response(summary: dict[str, Any], focus: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not focus:
+        return None
+    pid = summary.get("pid")
+    analysis = summary.get("analysis") or {}
+    if focus.get("type") == "sepsis":
+        sepsis_info = summary.get("sepsis_info") or {}
+        state = summary.get("clinical_state") or {}
+        actual = []
+        if state.get("antibiotics_active"):
+            actual.append("Antibiotics active")
+        if state.get("cultures_ordered"):
+            actual.append("Blood cultures ordered")
+        if state.get("vasopressors_active"):
+            actual.append("Vasopressors active")
+        return {
+            "violation": not sepsis_info.get("compliance", False),
+            "protocol_expected": [
+                "Broad-spectrum antibiotics within 1h",
+                "Blood cultures",
+                "Vasopressors if MAP<65",
+            ],
+            "actual_treatment": actual or ["None recorded"],
+            "highlight_nodes": list(dict.fromkeys(sepsis_info.get("highlight_nodes") or [f"Patient:{pid}"])),
+            "highlight_relationships": list(dict.fromkeys(sepsis_info.get("highlight_relationships") or [])),
+            "highlight_query": sepsis_info.get("highlight_query") or _build_highlight_query(patient_id=pid),
+            "paths": sepsis_info.get("paths") or [],
+        }
+
+    did = focus.get("id")
+    dname = focus.get("name") or did
+    scoped = _scoped_compliance_result(analysis, did, dname)
+    if not scoped:
+        return {
+            "violation": False,
+            "protocol_expected": [],
+            "actual_treatment": [],
+            "highlight_nodes": [f"Patient:{pid}", f"Disease:{did}"] if did else [f"Patient:{pid}"],
+            "highlight_relationships": ["HAS_DISEASE"] if did else [],
+            "highlight_query": _build_highlight_query(patient_id=pid, disease_ids=[did] if did else None),
+            "paths": [],
+        }
+    scoped_analysis = dict(analysis)
+    scoped_analysis["compliance_results"] = [scoped]
+    protocol_expected = [x for x in [scoped.get("recommended_drug_name"), scoped.get("recommended_procedure_name")] if x]
+    actual_treatment = list(dict.fromkeys((scoped.get("actual_drug_names") or []) + (scoped.get("actual_procedure_names") or [])))
+    drug_ids = list(dict.fromkeys((scoped.get("actual_drug_ids") or []) + ([scoped.get("recommended_drug_id")] if scoped.get("recommended_drug_id") else [])))
+    proc_ids = list(dict.fromkeys((scoped.get("actual_procedure_ids") or []) + ([scoped.get("recommended_procedure_id")] if scoped.get("recommended_procedure_id") else [])))
+    highlight_nodes, highlight_relationships = _entities_to_highlight(
+        patient_id=pid,
+        disease_ids=[did] if did else None,
+        drug_ids=drug_ids or None,
+        procedure_ids=proc_ids or None,
+    )
+    if not (scoped.get("compliant") is True) and (scoped.get("violations") or []):
+        highlight_relationships = list(dict.fromkeys((highlight_relationships or []) + ["HAS_VIOLATION"]))
+    return {
+        "violation": not (scoped.get("compliant") is True),
+        "protocol_expected": protocol_expected,
+        "actual_treatment": actual_treatment,
+        "highlight_nodes": highlight_nodes,
+        "highlight_relationships": highlight_relationships,
+        "highlight_query": _build_highlight_query(
+            patient_id=pid,
+            disease_ids=[did] if did else None,
+            drug_ids=drug_ids or None,
+            procedure_ids=proc_ids or None,
+        ),
+        "paths": _build_path_from_patient_analysis(scoped_analysis),
+    }
 
 
 def patient_analysis_to_agent_response(patient_id: str) -> dict[str, Any]:
@@ -637,15 +943,26 @@ def _call_llm(question: str, context_for_llm: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "You are a healthcare compliance analyst. Answer the user's question based only on the "
-                        "provided graph context (Neo4j patient data, protocol guidelines, violations). "
-                        "Be concise. If there are protocol violations, state them clearly (e.g. missing recommended drug, "
-                        "wrong drug, missing procedure). Include patient notes when relevant."
+                        "You are a healthcare compliance analyst for a Neo4j-backed clinical graph. "
+                        "You MUST prioritize graph-connected facts (violations, diseases, symptoms, drugs, procedures, "
+                        "clinical state) over generic clinical prose. Reference relationship types when relevant "
+                        "(HAS_DISEASE, HAS_SYMPTOM, HAS_VIOLATION, HAS_CLINICAL_STATE, TREATED_WITH, HAD_PROCEDURE). "
+                        "Do not answer from general knowledge alone when the context contains graph data — tie every "
+                        "clinical claim to items in the provided context. "
+                        "Use stable, clinical wording; avoid filler. "
+                        "If protocol violations exist, state them explicitly (missing/wrong drug or procedure)."
                     ),
                 },
-                {"role": "user", "content": f"Context:\n{context_for_llm}\n\nQuestion: {question}\n\nAnswer:"},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Context:\n{context_for_llm}\n\nQuestion: {question}"
+                        + _STRUCTURED_SECTIONS_USER_SUFFIX
+                    ),
+                },
             ],
-            max_tokens=800,
+            max_tokens=900,
+            temperature=_LLM_TEMPERATURE,
         )
         return (response.choices[0].message.content or "").strip()
     except Exception as e:
@@ -739,7 +1056,7 @@ def ask_agent(question: str) -> dict[str, Any]:
     intent = _extract_question_intent(question)
     patient_id = _normalize_patient_id(intent.get("patient_id")) if intent.get("patient_id") else None
     doctor_id = intent.get("doctor_id")
-    context_parts = []
+    context_parts = _data_priority_preamble()
     protocol_expected = []
     actual_treatment = []
     violation = False
@@ -817,6 +1134,8 @@ def ask_agent(question: str) -> dict[str, Any]:
                     f"state SOFA={r.get('clinical_state', {}).get('sofa_score')}, "
                     f"lactate={r.get('clinical_state', {}).get('lactate')}, antibiotics={r.get('clinical_state', {}).get('antibiotics_active')}"
                 )
+            _sepsis_pids = list({r.get("patient_id") for r in results if r.get("patient_id")})
+            context_parts.extend(_graph_grounding_prompt_lines(_sepsis_pids))
             violation = any(not r.get("compliance") for r in results)
             protocol_expected = ["Broad-spectrum antibiotics within 1h", "Blood cultures", "Lactate", "Vasopressors if MAP<65"]
             actual_treatment = []
@@ -893,6 +1212,8 @@ def ask_agent(question: str) -> dict[str, Any]:
             context_parts.append(f"Doctor with most violations: {entity_doctor} ({worst[0][1]} violations).")
         context_parts.append("Doctor compliance scores: " + json.dumps(doctor_scores[:15], indent=2, default=str))
         context_parts.append("Violations: " + json.dumps(violated[:30], indent=2, default=str))
+        _doc_viol_pids = list({v.get("patient_id") for v in violated[:35] if v.get("patient_id")})
+        context_parts.extend(_graph_grounding_prompt_lines(_doc_viol_pids))
         violation = len(violated) > 0
         violated_rels = violated
         patient_to_doctors_map = patient_to_doctors
@@ -913,6 +1234,7 @@ def ask_agent(question: str) -> dict[str, Any]:
         disease_name = disease_name or disease_id
         context_parts.append(f"Patients with disease: {disease_name} ({disease_id}). From Neo4j HAS_DISEASE.")
         context_parts.append("Patient IDs: " + json.dumps(patient_ids_with_disease, default=str))
+        context_parts.extend(_graph_grounding_prompt_lines(patient_ids_with_disease))
         for pid in patient_ids_with_disease:
             analysis = analyze_patient_protocol(pid)
             context_parts.append(f"Patient {pid} ({analysis.get('patient_name', pid)}): " + json.dumps({
@@ -964,6 +1286,9 @@ def ask_agent(question: str) -> dict[str, Any]:
             violated = compliance.get("violated_relationships") or []
             context_parts.append("Patients with protocol violations (e.g. wrong/missing drug):")
             context_parts.append(json.dumps(violated[:40], indent=2, default=str))
+            context_parts.extend(
+                _graph_grounding_prompt_lines(list({x.get("patient_id") for x in violated[:25] if x.get("patient_id")}))
+            )
             for v in violated[:5]:
                 protocol_expected.extend(v.get("recommended_drug") or [])
                 actual_treatment.extend(v.get("actual_drugs") or [])
@@ -978,6 +1303,7 @@ def ask_agent(question: str) -> dict[str, Any]:
                 patient_to_doctors_map[p].append(doc_id)
         else:
             analysis = analyze_patient_protocol(pid)
+            context_parts.extend(_graph_grounding_prompt_lines([pid]))
             context_parts.append("Patient context: " + json.dumps({
                 "patient_id": analysis.get("patient_id"),
                 "patient_name": analysis.get("patient_name"),
@@ -1010,6 +1336,8 @@ def ask_agent(question: str) -> dict[str, Any]:
         compliance = detect_protocol_violations()
         violated = compliance.get("violated_relationships") or []
         context_parts.append("Violations: " + json.dumps(violated[:50], indent=2, default=str))
+        _gen_viol_pids = list({v.get("patient_id") for v in violated[:40] if v.get("patient_id")})
+        context_parts.extend(_graph_grounding_prompt_lines(_gen_viol_pids))
         violation = len(violated) > 0
         violated_rels = violated
         compliance_all = compliance.get("all_checks")
@@ -1094,6 +1422,335 @@ def ask_agent(question: str) -> dict[str, Any]:
 def ai_agent_query(question: str) -> dict[str, Any]:
     """Alias for ask_agent: natural language question -> compliance/violation analysis and paths for visualization."""
     return ask_agent(question)
+
+
+# ---------------------------------------------------------------------------
+# Patient-Aware "Smart" AI  (extends ask_agent — existing logic untouched)
+# ---------------------------------------------------------------------------
+
+def _build_patient_summary(pid: str, focus: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build a rich text summary + structured data for one patient."""
+    pid = _normalize_patient_id(pid) or pid
+    ctx = get_patient_context(pid)
+    analysis = analyze_patient_protocol(pid)
+
+    graph_compare: list[dict[str, Any]] = []
+    try:
+        graph_compare = get_patients_for_comparison([pid])
+    except Exception:
+        graph_compare = []
+
+    clinical_state = get_patient_clinical_state(pid)
+    sepsis_info = None
+    if clinical_state is not None:
+        from sepsis_compliance import run_sepsis_guidelines
+        sepsis_info = run_sepsis_guidelines(pid)
+
+    pname = ctx.get("patient_name") or pid
+    summary_parts = [
+        f"PATIENT_DATA_SCOPE patient_id={pid} patient_name={pname}",
+        f"All rows below are Neo4j facts for patient_id={pid} only — do not apply them to any other patient.",
+        f"Patient {pname} ({pid}):",
+    ]
+    if ctx.get("diseases"):
+        summary_parts.append(
+            "  Diseases: " + ", ".join(d["disease_name"] or d["disease_id"] for d in ctx["diseases"])
+        )
+    if ctx.get("actual_drugs"):
+        summary_parts.append(
+            "  Drugs received: " + ", ".join(d["name"] or d["id"] for d in ctx["actual_drugs"])
+        )
+    if ctx.get("actual_procedures"):
+        summary_parts.append(
+            "  Procedures: " + ", ".join(p["name"] or p["id"] for p in ctx["actual_procedures"])
+        )
+    if ctx.get("notes"):
+        summary_parts.append(
+            "  Clinical notes: " + " | ".join((n.get("text") or "")[:120] for n in ctx["notes"][:5])
+        )
+    include_clinical_state = clinical_state and (not focus or focus.get("type") == "sepsis")
+    if include_clinical_state:
+        cs = clinical_state
+        summary_parts.append(
+            f"  Clinical state: SOFA={cs.get('sofa_score')}, MAP={cs.get('map')}, "
+            f"lactate={cs.get('lactate')}, GCS={cs.get('gcs')}, creatinine={cs.get('creatinine')}, "
+            f"antibiotics={cs.get('antibiotics_active')}, vasopressors={cs.get('vasopressors_active')}, "
+            f"cultures={cs.get('cultures_ordered')}"
+        )
+    comp = analysis.get("compliance_results") or []
+    violations = []
+    if focus and focus.get("type") == "disease":
+        scoped = _scoped_compliance_result(analysis, focus.get("id"), focus.get("name"))
+        if scoped:
+            for v in scoped.get("violations") or []:
+                violations.append(v)
+    else:
+        for r in comp:
+            for v in r.get("violations") or []:
+                violations.append(v)
+    if (not focus or focus.get("type") == "sepsis") and sepsis_info and not sepsis_info.get("compliance"):
+        for v in sepsis_info.get("violations") or []:
+            if v not in violations:
+                violations.append(v)
+    if focus:
+        summary_parts.append(_build_focus_context_block({
+            "pid": pid,
+            "name": pname,
+            "analysis": analysis,
+            "clinical_state": clinical_state,
+            "sepsis_info": sepsis_info,
+        }, focus))
+    if violations:
+        summary_parts.append("  Violations: " + "; ".join(violations))
+    else:
+        summary_parts.append("  Compliance: No violations found.")
+
+    if graph_compare:
+        gr = graph_compare[0]
+        syms = gr.get("symptoms") or []
+        if syms:
+            summary_parts.append(
+                "  Graph symptoms (HAS_SYMPTOM): "
+                + ", ".join((s.get("name") or s.get("id")) for s in syms if s)
+            )
+        gv = gr.get("violations") or []
+        if gv:
+            summary_parts.append(
+                "  Graph violation nodes (HAS_VIOLATION): " + "; ".join(str(x) for x in gv[:12])
+            )
+
+    summary_parts.extend([ln for ln in _graph_grounding_prompt_lines([pid]) if ln.strip()])
+
+    return {
+        "pid": pid,
+        "name": ctx.get("patient_name") or pid,
+        "context": ctx,
+        "analysis": analysis,
+        "clinical_state": clinical_state,
+        "sepsis_info": sepsis_info,
+        "violations": violations,
+        "summary_text": "\n".join(summary_parts),
+    }
+
+
+def ask_agent_with_context(
+    question: str,
+    selected_patient_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Patient-aware AI: if selected_patient_ids are provided, the LLM receives
+    each patient's full Neo4j context (diseases, drugs, procedures, notes,
+    clinical state, compliance results).  For multi-patient selections the
+    prompt also asks the LLM to compare.  Falls back to the original
+    ask_agent() when no patients are selected.
+    """
+    question = (question or "").strip()
+    ids = [_normalize_patient_id(p) for p in (selected_patient_ids or []) if p]
+    ids = [p for p in ids if p]
+    ids = list(dict.fromkeys(ids))
+
+    if not ids:
+        return ask_agent(question)
+
+    summaries = [_build_patient_summary(pid) for pid in ids]
+
+    name_by_pid = {s["pid"]: (s.get("name") or s["pid"]) for s in summaries}
+    focus_condition = _infer_focus_condition(question, summaries[0]) if len(ids) == 1 else None
+    if focus_condition and len(ids) == 1:
+        summaries = [_build_patient_summary(ids[0], focus=focus_condition)]
+
+    if len(ids) == 1:
+        scope_top = _locked_patient_context_header(ids[0], summaries[0].get("name") or ids[0])
+        patient_blocks = "\n\n".join(s["summary_text"] for s in summaries)
+        context_block = (
+            scope_top
+            + "\n".join(_data_priority_preamble())
+            + "\n\n"
+            + patient_blocks
+        )
+    else:
+        scope_top = _comparison_context_header(ids, name_by_pid)
+        patient_blocks = "\n\n".join(
+            "▶ SECTION_START patient_id=" + s["pid"] + "\n" + s["summary_text"] + "\n▶ SECTION_END patient_id=" + s["pid"]
+            for s in summaries
+        )
+        context_block = scope_top + "\n".join(_data_priority_preamble()) + "\n\n" + patient_blocks
+
+    guidelines = get_protocol_guidelines()
+    context_block += (
+        "\n\n--- Reference: protocol templates (disease-level; map ONLY to diseases listed "
+        "under each patient section above — do not assume an unlisted disease belongs to a patient) ---\n"
+        "Protocol guidelines:\n"
+        + json.dumps([{k: v for k, v in g.items()} for g in guidelines], indent=2, default=str)
+    )
+
+    sepsis_gl = get_sepsis_guidelines()
+    if sepsis_gl:
+        context_block += (
+            "\n\n--- Reference: sepsis guideline thresholds (apply only when this patient's section "
+            "includes HAS_CLINICAL_STATE / sepsis-related data) ---\nSepsis guidelines:\n"
+            + json.dumps(sepsis_gl[:1], indent=2, default=str)
+        )
+
+    if len(ids) > 1:
+        system_prompt = (
+            "You assist clinicians using a Neo4j patient graph. MULTIPLE patients are selected — COMPARISON MODE.\n"
+            "Hard rules: (1) You may ONLY reason about patient ids explicitly listed in the MULTI-PATIENT_COMPARISON_MODE "
+            "banner and their SECTION_START/END blocks. Never introduce a third patient’s clinical facts.\n"
+            "(2) Answer ONLY from those sections plus protocol JSON — graph relationships "
+            "(HAS_DISEASE, HAS_SYMPTOM, HAS_VIOLATION, HAS_CLINICAL_STATE, TREATED_WITH, HAD_PROCEDURE) "
+            "take priority over generic medical knowledge.\n"
+            "(3) Compare only attributes present in the data; label which patient each fact belongs to.\n"
+            "(4) Do not merge one patient’s diseases, drugs, or violations onto another.\n"
+            "(5) Evidence bullets must name the patient_id each fact refers to."
+        )
+    else:
+        pid0 = ids[0]
+        system_prompt = (
+            f"You assist clinicians using a Neo4j patient graph. Exactly ONE patient is in scope: patient_id={pid0}.\n"
+            "You may ONLY reason using data from the currently selected patient context for that id. "
+            "Every clinical claim must be traceable to the PATIENT_DATA_SCOPE / SINGLE-PATIENT_SCOPE block or its "
+            "graph edges (HAS_DISEASE, HAS_SYMPTOM, HAS_VIOLATION, HAS_CLINICAL_STATE, TREATED_WITH, HAD_PROCEDURE, "
+            "HAS_NOTE). "
+            "Do not use another patient’s diseases, drugs, symptoms, notes, or violations. "
+            "If the user’s question references a different patient id, explain that your context is locked to "
+            f"patient_id={pid0} and answer only from data for {pid0}. "
+            "Protocol guidelines are reference templates — tie them only to diseases that appear for this patient. "
+            "If data is missing, say so; do not invent or borrow from other patients."
+        )
+        if focus_condition:
+            system_prompt += (
+                f" Focus condition for this answer: {focus_condition.get('name')}."
+                " When summarizing violations, recommendations, expected care, and actual treatment,"
+                " restrict the answer to this focus condition only unless the user explicitly asks to compare conditions."
+            )
+
+    if len(ids) == 1:
+        user_prefix = (
+            f"ACTIVE_PATIENT_ID: {ids[0]}\n"
+            f"ACTIVE_PATIENT_NAME: {summaries[0].get('name') or ids[0]}\n"
+            "MANDATORY_ISOLATION: Use only facts for ACTIVE_PATIENT_ID. Cross-patient reasoning is forbidden.\n\n"
+        )
+    else:
+        user_prefix = (
+            "COMPARISON_ALLOWLIST_PATIENT_IDS: "
+            + ", ".join(ids)
+            + "\nMANDATORY: Attribute each clinical fact to the correct patient_id from this list only.\n\n"
+        )
+
+    answer = _call_llm_smart(question, context_block, system_prompt, user_prefix=user_prefix)
+
+    scoped_payload = _build_scoped_response(summaries[0], focus_condition) if (len(ids) == 1 and focus_condition) else None
+    if scoped_payload:
+        all_violation = scoped_payload["violation"]
+        protocol_expected = scoped_payload["protocol_expected"]
+        actual_treatment = scoped_payload["actual_treatment"]
+        highlight_nodes = scoped_payload["highlight_nodes"]
+        highlight_relationships = scoped_payload["highlight_relationships"]
+        highlight_query = scoped_payload["highlight_query"]
+        paths = scoped_payload["paths"]
+    else:
+        all_violation = any(s["violations"] for s in summaries)
+        protocol_expected: list[str] = []
+        actual_treatment: list[str] = []
+        highlight_nodes: list[str] = []
+        highlight_relationships: list[str] = []
+        paths: list[dict] = []
+
+        for s in summaries:
+            pid = s["pid"]
+            highlight_nodes.append(f"Patient:{pid}")
+            analysis = s["analysis"]
+            for r in analysis.get("compliance_results") or []:
+                if r.get("disease_id"):
+                    highlight_nodes.append(f"Disease:{r['disease_id']}")
+                    highlight_relationships.append("HAS_DISEASE")
+                if r.get("recommended_drug_name"):
+                    protocol_expected.append(r["recommended_drug_name"])
+                if r.get("recommended_procedure_name"):
+                    protocol_expected.append(r["recommended_procedure_name"])
+                actual_treatment.extend(r.get("actual_drug_names") or [])
+                actual_treatment.extend(r.get("actual_procedure_names") or [])
+                for did in r.get("actual_drug_ids") or []:
+                    highlight_nodes.append(f"Drug:{did}")
+                    highlight_relationships.append("TREATED_WITH")
+                for pid2 in r.get("actual_procedure_ids") or []:
+                    highlight_nodes.append(f"Procedure:{pid2}")
+                    highlight_relationships.append("HAD_PROCEDURE")
+            if s["clinical_state"]:
+                highlight_relationships.append("HAS_CLINICAL_STATE")
+            if s["violations"]:
+                highlight_relationships.append("HAS_VIOLATION")
+            for p in _build_path_from_patient_analysis(analysis):
+                paths.append(p)
+
+        highlight_nodes = list(dict.fromkeys(highlight_nodes))
+        highlight_relationships = list(dict.fromkeys(highlight_relationships))
+        protocol_expected = list(dict.fromkeys(x for x in protocol_expected if x))
+        actual_treatment = list(dict.fromkeys(x for x in actual_treatment if x))
+
+        pids_str = ", ".join(f"'{p}'" for p in ids)
+        highlight_query = (
+            f"MATCH (p:Patient) WHERE p.id IN [{pids_str}]"
+            " OPTIONAL MATCH (p)-[:HAS_DISEASE]->(d:Disease)"
+            " OPTIONAL MATCH (p)-[:TREATED_WITH]->(drug:Drug)"
+            " OPTIONAL MATCH (p)-[:HAD_PROCEDURE]->(proc:Procedure)"
+            " OPTIONAL MATCH (p)-[:HAS_CLINICAL_STATE]->(c:ClinicalState)"
+            " OPTIONAL MATCH (p)-[:HAS_VIOLATION]->(v:Violation)"
+            " RETURN p, d, drug, proc, c, v"
+        )
+
+    return {
+        "answer": answer,
+        "violation": all_violation,
+        "protocol_expected": protocol_expected,
+        "actual_treatment": actual_treatment,
+        "highlight_nodes": highlight_nodes,
+        "highlight_relationships": highlight_relationships,
+        "highlight_query": highlight_query,
+        "paths": paths,
+        "selected_patients": [{"pid": s["pid"], "name": s["name"]} for s in summaries],
+        "condition_scope": focus_condition,
+    }
+
+
+def _call_llm_smart(
+    question: str,
+    context: str,
+    system_prompt: str,
+    *,
+    user_prefix: str = "",
+) -> str:
+    """Call OpenAI with a custom system prompt for patient-aware answers."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return (
+            "No OPENAI_API_KEY set. Here is the retrieved patient context:\n\n"
+            + (user_prefix or "")
+            + (context[:2000] or "No context.")
+        )
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        user_prefix
+                        + f"Patient data:\n{context}\n\nQuestion: {question}"
+                        + _STRUCTURED_SECTIONS_USER_SUFFIX
+                    ),
+                },
+            ],
+            max_tokens=1200,
+            temperature=_LLM_TEMPERATURE,
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception as e:
+        return f"LLM error: {e}. Context summary:\n{context[:1000]}"
 
 
 if __name__ == "__main__":

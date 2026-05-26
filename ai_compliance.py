@@ -43,10 +43,33 @@ def check_patient_compliance(patient_id: str, patient_name: str, disease_id: str
     actual_drug_ids = actual.get("actual_drug_ids") or []
     actual_proc_ids = actual.get("actual_procedure_ids") or []
     violations = []
+    violations_structured = []
     if rec_drug_id and (not actual_drug_ids or rec_drug_id not in actual_drug_ids):
-        violations.append(f"Wrong or missing drug: recommended '{rec_drug_name}' ({rec_drug_id}), actual {actual.get('actual_drug_names') or 'none'}")
+        text = f"Wrong or missing drug: recommended '{rec_drug_name}' ({rec_drug_id}), actual {actual.get('actual_drug_names') or 'none'}"
+        violations.append(text)
+        has_wrong = actual_drug_ids and rec_drug_id not in actual_drug_ids
+        violations_structured.append({
+            "text": text,
+            "severity": "critical" if not actual_drug_ids else "warning",
+            "reason": (f"Patient is not receiving any drug for {disease_name}. "
+                       f"Protocol requires '{rec_drug_name}'."
+                       if not actual_drug_ids else
+                       f"Patient is receiving {', '.join(actual.get('actual_drug_names') or [])} instead of "
+                       f"the recommended '{rec_drug_name}' for {disease_name}. "
+                       "Using a non-recommended drug may reduce treatment efficacy."),
+        })
     if rec_proc_id and (not actual_proc_ids or rec_proc_id not in actual_proc_ids):
-        violations.append(f"Wrong or missing procedure: recommended '{rec_proc_name}' ({rec_proc_id}), actual {actual.get('actual_procedure_names') or 'none'}")
+        text = f"Wrong or missing procedure: recommended '{rec_proc_name}' ({rec_proc_id}), actual {actual.get('actual_procedure_names') or 'none'}"
+        violations.append(text)
+        violations_structured.append({
+            "text": text,
+            "severity": "critical" if not actual_proc_ids else "warning",
+            "reason": (f"No procedure performed for {disease_name}. "
+                       f"Protocol requires '{rec_proc_name}'."
+                       if not actual_proc_ids else
+                       f"Patient received {', '.join(actual.get('actual_procedure_names') or [])} instead of "
+                       f"the recommended '{rec_proc_name}' for {disease_name}."),
+        })
     compliant = len(violations) == 0
     return {
         "patient_id": patient_id,
@@ -55,6 +78,7 @@ def check_patient_compliance(patient_id: str, patient_name: str, disease_id: str
         "disease_name": disease_name,
         "compliant": compliant,
         "violations": violations,
+        "violations_structured": violations_structured,
         "recommended_drug_id": rec_drug_id,
         "recommended_drug_name": rec_drug_name,
         "recommended_procedure_id": rec_proc_id,

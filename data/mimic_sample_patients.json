@@ -1,0 +1,87 @@
+{
+  "dataset": "mimic_sample_patients",
+  "version": "1.0",
+  "description": "De-identified, schema-ready sample rows for clinical dashboard integration. Replace or merge with files from the mimic_sample_patients branch when available; import is idempotent on mimic_subject_id.",
+  "records": [
+    {
+      "mimic_subject_id": 10006,
+      "display_name": "MIMIC sample 10006",
+      "gender": "M",
+      "anchor_age": 73,
+      "diseases": [
+        { "disease_id": "D1", "diagnosed_on": "2132-04-10" },
+        { "disease_id": "D4", "diagnosed_on": "2131-11-02" }
+      ],
+      "symptoms": ["Dyspnea on exertion", "Peripheral edema"],
+      "encounter": {
+        "date": "2132-04-12",
+        "type": "inpatient",
+        "notes": "MIMIC-derived sample: volume overload, diuretic titration (synthetic notes)."
+      },
+      "labs": [
+        { "name": "Creatinine", "result_value": "1.4", "unit": "mg/dL", "normal_range": "0.6-1.2", "status": "final", "date": "2132-04-12" },
+        { "name": "BNP", "result_value": "580", "unit": "pg/mL", "normal_range": "<100", "status": "final", "date": "2132-04-12" }
+      ],
+      "clinical_state": { "sofa_score": 2, "map": 78, "gcs": 15, "creatinine": 1.4, "lactate": 1.1 }
+    },
+    {
+      "mimic_subject_id": 10032,
+      "display_name": "MIMIC sample 10032",
+      "gender": "F",
+      "anchor_age": 59,
+      "diseases": [
+        { "disease_id": "D2", "diagnosed_on": "2130-08-20" }
+      ],
+      "symptoms": ["Polyuria", "Fatigue"],
+      "encounter": {
+        "date": "2132-01-15",
+        "type": "outpatient",
+        "notes": "MIMIC-derived sample: T2DM follow-up, HbA1c review (synthetic)."
+      },
+      "labs": [
+        { "name": "HbA1c", "result_value": "7.4", "unit": "%", "normal_range": "4-6", "status": "final", "date": "2132-01-15" },
+        { "name": "Fasting glucose", "result_value": "142", "unit": "mg/dL", "normal_range": "70-100", "status": "final", "date": "2132-01-15" }
+      ],
+      "clinical_state": { "sofa_score": 0, "map": 88, "gcs": 15, "creatinine": 0.9, "lactate": 0.8 }
+    },
+    {
+      "mimic_subject_id": 10055,
+      "display_name": "MIMIC sample 10055",
+      "gender": "M",
+      "anchor_age": 66,
+      "diseases": [
+        { "disease_id": "D6", "diagnosed_on": "2132-02-01" }
+      ],
+      "symptoms": ["Fever", "Productive cough", "Hypoxia"],
+      "encounter": {
+        "date": "2132-02-02",
+        "type": "inpatient",
+        "notes": "MIMIC-derived sample: community-acquired pneumonia, IV antibiotics (synthetic)."
+      },
+      "labs": [
+        { "name": "CBC WBC", "result_value": "15.1", "unit": "K/uL", "normal_range": "4-11", "status": "final", "date": "2132-02-02" },
+        { "name": "Lactate", "result_value": "2.3", "unit": "mmol/L", "normal_range": "<2.0", "status": "final", "date": "2132-02-02" }
+      ],
+      "clinical_state": { "sofa_score": 4, "map": 70, "gcs": 14, "creatinine": 1.1, "lactate": 2.3 }
+    },
+    {
+      "mimic_subject_id": 10078,
+      "display_name": "MIMIC sample 10078",
+      "gender": "F",
+      "anchor_age": 68,
+      "diseases": [
+        { "disease_id": "D8", "diagnosed_on": "2129-05-10" }
+      ],
+      "symptoms": ["Wheezing", "Chronic dyspnea"],
+      "encounter": {
+        "date": "2131-10-22",
+        "type": "outpatient",
+        "notes": "MIMIC-derived sample: COPD flare, inhaler therapy (synthetic)."
+      },
+      "labs": [
+        { "name": "Spirometry FEV1", "result_value": "66", "unit": "% predicted", "normal_range": ">80", "status": "final", "date": "2131-10-22" }
+      ],
+      "clinical_state": { "sofa_score": 1, "map": 82, "gcs": 15, "creatinine": 0.8, "lactate": 0.9 }
+    }
+  ]
+}

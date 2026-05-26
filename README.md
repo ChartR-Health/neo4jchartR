@@ -49,7 +49,8 @@ The seed creates **actual clinical treatment data** (not only structure) so the 
 ## Running in VS Code
 
 - **Terminal:** Open integrated terminal (`Ctrl+`` ` or View → Terminal), activate venv: `source venv/bin/activate` (macOS/Linux) or `venv\Scripts\activate` (Windows).
-- **Run API:** In terminal, `uvicorn api:app --reload` then open http://127.0.0.1:8000/docs for Swagger.
+- **Run API (compliance only):** `uvicorn api:app --reload` → http://127.0.0.1:8000/docs  
+- **Run dashboard API (AI, upload, patient graph, benchmark):** `uvicorn api_server:app --reload` → same port by default; needed for **Run Benchmark** and AI features in `compliance_dashboard.html`.
 - **Run compliance dashboard:** `python3 dashboard.py` — opens `compliance_dashboard.html` with side menu, stats, explanations, and filters.
 - **Run compliance graph:** In terminal, `python3 visualization.py` — opens `compliance_graph.html` in the browser (red = violations, green = compliant).
 - **Run main graph:** `python3 visualize_graph.py` — opens `graph.html`.
@@ -137,6 +138,30 @@ python3 dashboard.py
 
 ---
 
+## Clinical AI benchmark
+
+The dashboard can run a **live evaluation** that compares graph-grounded AI answers with an LLM-only arm on fixed clinical questions. Implementation: `benchmark_eval.py` (`run_clinical_benchmark()`), exposed as **`GET /benchmark`** on the **dashboard API** (`api_server.py`), not on `api.py`.
+
+**Run the API** (same host/port as the dashboard’s AI base URL, usually `http://127.0.0.1:8000`):
+
+```bash
+uvicorn api_server:app --reload
+```
+
+**From the UI:** open `compliance_dashboard.html` (e.g. `python3 dashboard.py`), ensure you are signed in and the graph loads, then click **Run Benchmark** in the filter bar. Results open in a modal (scores, charts, per-case table).
+
+**From the terminal or Swagger:**
+
+```bash
+curl -s http://127.0.0.1:8000/benchmark | python3 -m json.tool
+```
+
+Or open http://127.0.0.1:8000/docs and execute **`GET /benchmark`**.
+
+**Requirements:** Neo4j must be running with seeded data. Set **`OPENAI_API_KEY`** in `.env` for full LLM behaviour in both benchmark arms; without it, scores and answers may degrade (see messages in `benchmark_eval.py`).
+
+---
+
 ## Graph visualization (pyvis)
 
 Generate an interactive HTML graph from the database:
@@ -185,6 +210,8 @@ python3 main.py
 - **`main.py`** – Console UI that calls the above.
 - **`ai_compliance.py`** – Compares actual treatments with protocol; flags violations; computes doctor compliance scores. Used by API and visualization.
 - **`api.py`** – FastAPI app: `GET /check_compliance` returns violations and doctor scores (queries Neo4j dynamically).
+- **`api_server.py`** – FastAPI app for the interactive dashboard: AI (`/ask-agent`, `/analyze-patient`), document upload, `GET /patients-sync`, `GET /patient-graph/{patient_id}`, **`GET /benchmark`**, etc.
+- **`benchmark_eval.py`** – Clinical benchmark suite (graph vs LLM-only); used by **`GET /benchmark`**.
 - **`dashboard.py`** – Interactive compliance dashboard: side menu (stats, node/edge legend, color coding), enhanced tooltips (patient age/sex/diseases, doctor compliance), click-to-show protocol explanations, and filters (doctor, patient, disease, compliance, hospital). Calls `run_compliance_check()` when run. Output: `compliance_dashboard.html`.
 - **`protocol_explanations.py`** – Short text explanations for why each protocol drug/procedure is recommended (Disease, Drug, Procedure keys); used by the dashboard on node click.
 - **`visualization.py`** – Compliance-focused pyvis graph: red edges = violations, green = compliant; hover shows actual vs recommended. Output: `compliance_graph.html`.

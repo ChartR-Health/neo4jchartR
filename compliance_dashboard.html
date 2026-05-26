@@ -2026,6 +2026,13 @@
       seedIds = seedIds.filter(function(id, i, a) { return a.indexOf(id) === i; });
       if (seedIds.length) {
         var edges = window._allEdges || toNodeArray(net.body.data.edges.get());
+        var allowDoctor = null;
+        if (doctor) {
+          allowDoctor = {};
+          seedIds.forEach(function(id) {
+            if (nodeMap[id] && nodeMap[id].node_type === 'Doctor') allowDoctor[id] = true;
+          });
+        }
         // When filtering by doctor: only include that doctor and their patients (don't follow into other doctors' patients)
         var allowPatient = null;
         if (doctor && !patient && !disease && !hospital) {
@@ -2059,6 +2066,7 @@
               var other = e.from === cur ? e.to : (e.to === cur ? e.from : null);
               if (!other || seen[other]) return;
               var node = nodeMap[other];
+              if (allowDoctor !== null && node && node.node_type === 'Doctor' && !allowDoctor[other]) return;
               if (allowPatient !== null && node && node.node_type === 'Patient' && !allowPatient[other]) return;
               if (allowHospital !== null && node && node.node_type === 'Hospital' && !allowHospital[other]) return;
               if (allowDisease !== null && node && node.node_type === 'Disease' && !allowDisease[other]) return;
@@ -3311,6 +3319,7 @@
     var treatments = [];
     var seenD = {};
     var seenT = {};
+    var scope = data && data.condition_scope ? data.condition_scope : null;
     function addD(name) {
       var n = (name || '').trim();
       if (!n || seenD[n.toLowerCase()]) return;
@@ -3338,7 +3347,12 @@
     if (data && data.selected_patients && data.selected_patients.length) pid = data.selected_patients[0];
     else if (typeof _patientContext !== 'undefined' && _patientContext && _patientContext.selected) pid = _patientContext.selected.pid;
     else if (window.currentUser && window.currentUser.patientId) pid = window.currentUser.patientId;
-    if (pid && typeof _getConnectedByType === 'function') {
+    if (scope && scope.type === 'disease' && scope.name) {
+      diseases = [];
+      seenD = {};
+      addD(scope.name);
+    }
+    if (pid && typeof _getConnectedByType === 'function' && !scope) {
       try {
         var g = _getConnectedByType(pid);
         (g.diseases || []).forEach(addD);
@@ -3765,7 +3779,7 @@
       } else labelEl.textContent = 'Import new patient';
     }
     var compareBtn = document.querySelector('.compare-btn');
-    if (compareBtn) compareBtn.style.display = _isPatientPortalUser() ? 'none' : '';
+  if (compareBtn) compareBtn.style.display = _isPatientPortalUser() ? 'none' : '';
   }
 
   function refreshUploadModalChrome() {

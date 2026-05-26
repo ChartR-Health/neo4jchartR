@@ -333,6 +333,198 @@ def analyze_patient_protocol(patient_id: str) -> dict[str, Any]:
     return context
 
 
+_SEPSIS_FOCUS_RE = re.compile(
+    r"\b(sepsis|septic|sofa|qsofa|esofa|map|lactate|vasopressor|vasopressors|blood culture|blood cultures|cultures|hypotension|antibiotic|antibiotics)\b",
+    re.IGNORECASE,
+)
+
+
+def _focus_matches_disease(question: str, disease_name: str | None, disease_id: str | None) -> bool:
+    q = (question or "").strip().lower()
+    if not q:
+        return False
+    name = (disease_name or "").strip().lower()
+    did = (disease_id or "").strip().lower()
+    if did and did in q:
+        return True
+    if name and name in q:
+        return True
+    if name:
+        compact = re.sub(r"[^a-z0-9]+", " ", name).strip()
+        if compact and compact in q:
+            return True
+    return False
+
+
+def _scoped_compliance_result(
+    analysis: dict[str, Any],
+    disease_id: str | None,
+    disease_name: str | None = None,
+) -> dict[str, Any] | None:
+    for r in analysis.get("compliance_results") or []:
+        if disease_id and r.get("disease_id") == disease_id:
+            return r
+        if disease_name and (r.get("disease_name") or "").strip().lower() == (disease_name or "").strip().lower():
+            return r
+    return None
+
+
+def _infer_focus_condition(question: str, summary: dict[str, Any]) -> dict[str, Any] | None:
+    ctx = summary.get("context") or {}
+    diseases = ctx.get("diseases") or []
+    analysis = summary.get("analysis") or {}
+    clinical_state = summary.get("clinical_state")
+    q = (question or "").strip()
+
+    if clinical_state is not None and _SEPSIS_FOCUS_RE.search(q):
+        return {"type": "sepsis", "id": "sepsis", "name": "Sepsis-related care"}
+
+    matched = []
+    for d in diseases:
+        did = d.get("disease_id")
+        dname = d.get("disease_name") or did
+        if _focus_matches_disease(q, dname, did):
+            matched.append({"type": "disease", "id": did, "name": dname})
+    if len(matched) == 1:
+        return matched[0]
+
+    if len(diseases) == 1:
+        d = diseases[0]
+        return {"type": "disease", "id": d.get("disease_id"), "name": d.get("disease_name") or d.get("disease_id")}
+
+    violating = [
+        r for r in (analysis.get("compliance_results") or [])
+        if not (r.get("compliant") is True) and (r.get("violations") or [])
+    ]
+    unique_violating = {(r.get("disease_id"), r.get("disease_name") or r.get("disease_id")) for r in violating if r.get("disease_id")}
+    if len(unique_violating) == 1:
+        did, dname = next(iter(unique_violating))
+        return {"type": "disease", "id": did, "name": dname}
+
+    if clinical_state is not None and not diseases:
+        return {"type": "sepsis", "id": "sepsis", "name": "Sepsis-related care"}
+
+    return None
+
+
+def _build_focus_context_block(summary: dict[str, Any], focus: dict[str, Any] | None) -> str:
+    if not focus:
+        return ""
+    pname = summary.get("name") or summary.get("pid")
+    pid = summary.get("pid")
+    analysis = summary.get("analysis") or {}
+    lines = [
+        "=== FOCUS CONDITION (mandatory) ===",
+        f"Selected patient: {pname} ({pid})",
+    ]
+    if focus.get("type") == "sepsis":
+        sepsis_info = summary.get("sepsis_info") or {}
+        state = summary.get("clinical_state") or {}
+        actual = []
+        if state.get("antibiotics_active"):
+            actual.append("Antibiotics active")
+        if state.get("cultures_ordered"):
+            actual.append("Blood cultures ordered")
+        if state.get("vasopressors_active"):
+            actual.append("Vasopressors active")
+        lines.extend([
+            "Condition scope: Sepsis-related care only.",
+            "When discussing violations, recommendations, evidence, and actual treatment, use ONLY sepsis-related facts.",
+            "Ignore disease-specific protocol violations unless the user explicitly asks about another disease.",
+            "Expected sepsis care: Broad-spectrum antibiotics within 1 hour; blood cultures; vasopressors if MAP < 65 mmHg and fluid-refractory.",
+            "Actual sepsis-related care: " + (", ".join(actual) if actual else "None recorded."),
+            "Sepsis violations: " + ("; ".join(sepsis_info.get("violations") or []) if sepsis_info and not sepsis_info.get("compliance") else "None."),
+        ])
+    else:
+        did = focus.get("id")
+        dname = focus.get("name") or did
+        scoped = _scoped_compliance_result(analysis, did, dname) or {}
+        expected = [x for x in [scoped.get("recommended_drug_name"), scoped.get("recommended_procedure_name")] if x]
+        actual = list(dict.fromkeys((scoped.get("actual_drug_names") or []) + (scoped.get("actual_procedure_names") or [])))
+        lines.extend([
+            f"Condition scope: {dname} ({did}).",
+            "When discussing violations, recommendations, evidence, and actual treatment, use ONLY this disease.",
+            "Ignore sepsis-related findings unless the user explicitly asks about sepsis, MAP, lactate, SOFA, vasopressors, antibiotics, or blood cultures.",
+            "Expected protocol for this disease: " + (", ".join(expected) if expected else "No protocol items found."),
+            "Actual treatment for this disease: " + (", ".join(actual) if actual else "None recorded."),
+            "Violations for this disease: " + ("; ".join(scoped.get("violations") or []) if scoped and not (scoped.get("compliant") is True) else "None."),
+        ])
+    lines.append("=== END FOCUS CONDITION ===")
+    return "\n".join(lines)
+
+
+def _build_scoped_response(summary: dict[str, Any], focus: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not focus:
+        return None
+    pid = summary.get("pid")
+    analysis = summary.get("analysis") or {}
+    if focus.get("type") == "sepsis":
+        sepsis_info = summary.get("sepsis_info") or {}
+        state = summary.get("clinical_state") or {}
+        actual = []
+        if state.get("antibiotics_active"):
+            actual.append("Antibiotics active")
+        if state.get("cultures_ordered"):
+            actual.append("Blood cultures ordered")
+        if state.get("vasopressors_active"):
+            actual.append("Vasopressors active")
+        return {
+            "violation": not sepsis_info.get("compliance", False),
+            "protocol_expected": [
+                "Broad-spectrum antibiotics within 1h",
+                "Blood cultures",
+                "Vasopressors if MAP<65",
+            ],
+            "actual_treatment": actual or ["None recorded"],
+            "highlight_nodes": list(dict.fromkeys(sepsis_info.get("highlight_nodes") or [f"Patient:{pid}"])),
+            "highlight_relationships": list(dict.fromkeys(sepsis_info.get("highlight_relationships") or [])),
+            "highlight_query": sepsis_info.get("highlight_query") or _build_highlight_query(patient_id=pid),
+            "paths": sepsis_info.get("paths") or [],
+        }
+
+    did = focus.get("id")
+    dname = focus.get("name") or did
+    scoped = _scoped_compliance_result(analysis, did, dname)
+    if not scoped:
+        return {
+            "violation": False,
+            "protocol_expected": [],
+            "actual_treatment": [],
+            "highlight_nodes": [f"Patient:{pid}", f"Disease:{did}"] if did else [f"Patient:{pid}"],
+            "highlight_relationships": ["HAS_DISEASE"] if did else [],
+            "highlight_query": _build_highlight_query(patient_id=pid, disease_ids=[did] if did else None),
+            "paths": [],
+        }
+    scoped_analysis = dict(analysis)
+    scoped_analysis["compliance_results"] = [scoped]
+    protocol_expected = [x for x in [scoped.get("recommended_drug_name"), scoped.get("recommended_procedure_name")] if x]
+    actual_treatment = list(dict.fromkeys((scoped.get("actual_drug_names") or []) + (scoped.get("actual_procedure_names") or [])))
+    drug_ids = list(dict.fromkeys((scoped.get("actual_drug_ids") or []) + ([scoped.get("recommended_drug_id")] if scoped.get("recommended_drug_id") else [])))
+    proc_ids = list(dict.fromkeys((scoped.get("actual_procedure_ids") or []) + ([scoped.get("recommended_procedure_id")] if scoped.get("recommended_procedure_id") else [])))
+    highlight_nodes, highlight_relationships = _entities_to_highlight(
+        patient_id=pid,
+        disease_ids=[did] if did else None,
+        drug_ids=drug_ids or None,
+        procedure_ids=proc_ids or None,
+    )
+    if not (scoped.get("compliant") is True) and (scoped.get("violations") or []):
+        highlight_relationships = list(dict.fromkeys((highlight_relationships or []) + ["HAS_VIOLATION"]))
+    return {
+        "violation": not (scoped.get("compliant") is True),
+        "protocol_expected": protocol_expected,
+        "actual_treatment": actual_treatment,
+        "highlight_nodes": highlight_nodes,
+        "highlight_relationships": highlight_relationships,
+        "highlight_query": _build_highlight_query(
+            patient_id=pid,
+            disease_ids=[did] if did else None,
+            drug_ids=drug_ids or None,
+            procedure_ids=proc_ids or None,
+        ),
+        "paths": _build_path_from_patient_analysis(scoped_analysis),
+    }
+
+
 def patient_analysis_to_agent_response(patient_id: str) -> dict[str, Any]:
     """
     Call analyze_patient_protocol(patient_id) and return the same structured response
@@ -1236,7 +1428,7 @@ def ai_agent_query(question: str) -> dict[str, Any]:
 # Patient-Aware "Smart" AI  (extends ask_agent — existing logic untouched)
 # ---------------------------------------------------------------------------
 
-def _build_patient_summary(pid: str) -> dict[str, Any]:
+def _build_patient_summary(pid: str, focus: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build a rich text summary + structured data for one patient."""
     pid = _normalize_patient_id(pid) or pid
     ctx = get_patient_context(pid)
@@ -1276,7 +1468,8 @@ def _build_patient_summary(pid: str) -> dict[str, Any]:
         summary_parts.append(
             "  Clinical notes: " + " | ".join((n.get("text") or "")[:120] for n in ctx["notes"][:5])
         )
-    if clinical_state:
+    include_clinical_state = clinical_state and (not focus or focus.get("type") == "sepsis")
+    if include_clinical_state:
         cs = clinical_state
         summary_parts.append(
             f"  Clinical state: SOFA={cs.get('sofa_score')}, MAP={cs.get('map')}, "
@@ -1286,13 +1479,27 @@ def _build_patient_summary(pid: str) -> dict[str, Any]:
         )
     comp = analysis.get("compliance_results") or []
     violations = []
-    for r in comp:
-        for v in r.get("violations") or []:
-            violations.append(v)
-    if sepsis_info and not sepsis_info.get("compliance"):
+    if focus and focus.get("type") == "disease":
+        scoped = _scoped_compliance_result(analysis, focus.get("id"), focus.get("name"))
+        if scoped:
+            for v in scoped.get("violations") or []:
+                violations.append(v)
+    else:
+        for r in comp:
+            for v in r.get("violations") or []:
+                violations.append(v)
+    if (not focus or focus.get("type") == "sepsis") and sepsis_info and not sepsis_info.get("compliance"):
         for v in sepsis_info.get("violations") or []:
             if v not in violations:
                 violations.append(v)
+    if focus:
+        summary_parts.append(_build_focus_context_block({
+            "pid": pid,
+            "name": pname,
+            "analysis": analysis,
+            "clinical_state": clinical_state,
+            "sepsis_info": sepsis_info,
+        }, focus))
     if violations:
         summary_parts.append("  Violations: " + "; ".join(violations))
     else:
@@ -1348,6 +1555,9 @@ def ask_agent_with_context(
     summaries = [_build_patient_summary(pid) for pid in ids]
 
     name_by_pid = {s["pid"]: (s.get("name") or s["pid"]) for s in summaries}
+    focus_condition = _infer_focus_condition(question, summaries[0]) if len(ids) == 1 else None
+    if focus_condition and len(ids) == 1:
+        summaries = [_build_patient_summary(ids[0], focus=focus_condition)]
 
     if len(ids) == 1:
         scope_top = _locked_patient_context_header(ids[0], summaries[0].get("name") or ids[0])
@@ -1408,6 +1618,12 @@ def ask_agent_with_context(
             "Protocol guidelines are reference templates — tie them only to diseases that appear for this patient. "
             "If data is missing, say so; do not invent or borrow from other patients."
         )
+        if focus_condition:
+            system_prompt += (
+                f" Focus condition for this answer: {focus_condition.get('name')}."
+                " When summarizing violations, recommendations, expected care, and actual treatment,"
+                " restrict the answer to this focus condition only unless the user explicitly asks to compare conditions."
+            )
 
     if len(ids) == 1:
         user_prefix = (
@@ -1424,55 +1640,65 @@ def ask_agent_with_context(
 
     answer = _call_llm_smart(question, context_block, system_prompt, user_prefix=user_prefix)
 
-    all_violation = any(s["violations"] for s in summaries)
-    protocol_expected: list[str] = []
-    actual_treatment: list[str] = []
-    highlight_nodes: list[str] = []
-    highlight_relationships: list[str] = []
-    paths: list[dict] = []
+    scoped_payload = _build_scoped_response(summaries[0], focus_condition) if (len(ids) == 1 and focus_condition) else None
+    if scoped_payload:
+        all_violation = scoped_payload["violation"]
+        protocol_expected = scoped_payload["protocol_expected"]
+        actual_treatment = scoped_payload["actual_treatment"]
+        highlight_nodes = scoped_payload["highlight_nodes"]
+        highlight_relationships = scoped_payload["highlight_relationships"]
+        highlight_query = scoped_payload["highlight_query"]
+        paths = scoped_payload["paths"]
+    else:
+        all_violation = any(s["violations"] for s in summaries)
+        protocol_expected: list[str] = []
+        actual_treatment: list[str] = []
+        highlight_nodes: list[str] = []
+        highlight_relationships: list[str] = []
+        paths: list[dict] = []
 
-    for s in summaries:
-        pid = s["pid"]
-        highlight_nodes.append(f"Patient:{pid}")
-        analysis = s["analysis"]
-        for r in analysis.get("compliance_results") or []:
-            if r.get("disease_id"):
-                highlight_nodes.append(f"Disease:{r['disease_id']}")
-                highlight_relationships.append("HAS_DISEASE")
-            if r.get("recommended_drug_name"):
-                protocol_expected.append(r["recommended_drug_name"])
-            if r.get("recommended_procedure_name"):
-                protocol_expected.append(r["recommended_procedure_name"])
-            actual_treatment.extend(r.get("actual_drug_names") or [])
-            actual_treatment.extend(r.get("actual_procedure_names") or [])
-            for did in r.get("actual_drug_ids") or []:
-                highlight_nodes.append(f"Drug:{did}")
-                highlight_relationships.append("TREATED_WITH")
-            for pid2 in r.get("actual_procedure_ids") or []:
-                highlight_nodes.append(f"Procedure:{pid2}")
-                highlight_relationships.append("HAD_PROCEDURE")
-        if s["clinical_state"]:
-            highlight_relationships.append("HAS_CLINICAL_STATE")
-        if s["violations"]:
-            highlight_relationships.append("HAS_VIOLATION")
-        for p in _build_path_from_patient_analysis(analysis):
-            paths.append(p)
+        for s in summaries:
+            pid = s["pid"]
+            highlight_nodes.append(f"Patient:{pid}")
+            analysis = s["analysis"]
+            for r in analysis.get("compliance_results") or []:
+                if r.get("disease_id"):
+                    highlight_nodes.append(f"Disease:{r['disease_id']}")
+                    highlight_relationships.append("HAS_DISEASE")
+                if r.get("recommended_drug_name"):
+                    protocol_expected.append(r["recommended_drug_name"])
+                if r.get("recommended_procedure_name"):
+                    protocol_expected.append(r["recommended_procedure_name"])
+                actual_treatment.extend(r.get("actual_drug_names") or [])
+                actual_treatment.extend(r.get("actual_procedure_names") or [])
+                for did in r.get("actual_drug_ids") or []:
+                    highlight_nodes.append(f"Drug:{did}")
+                    highlight_relationships.append("TREATED_WITH")
+                for pid2 in r.get("actual_procedure_ids") or []:
+                    highlight_nodes.append(f"Procedure:{pid2}")
+                    highlight_relationships.append("HAD_PROCEDURE")
+            if s["clinical_state"]:
+                highlight_relationships.append("HAS_CLINICAL_STATE")
+            if s["violations"]:
+                highlight_relationships.append("HAS_VIOLATION")
+            for p in _build_path_from_patient_analysis(analysis):
+                paths.append(p)
 
-    highlight_nodes = list(dict.fromkeys(highlight_nodes))
-    highlight_relationships = list(dict.fromkeys(highlight_relationships))
-    protocol_expected = list(dict.fromkeys(x for x in protocol_expected if x))
-    actual_treatment = list(dict.fromkeys(x for x in actual_treatment if x))
+        highlight_nodes = list(dict.fromkeys(highlight_nodes))
+        highlight_relationships = list(dict.fromkeys(highlight_relationships))
+        protocol_expected = list(dict.fromkeys(x for x in protocol_expected if x))
+        actual_treatment = list(dict.fromkeys(x for x in actual_treatment if x))
 
-    pids_str = ", ".join(f"'{p}'" for p in ids)
-    highlight_query = (
-        f"MATCH (p:Patient) WHERE p.id IN [{pids_str}]"
-        " OPTIONAL MATCH (p)-[:HAS_DISEASE]->(d:Disease)"
-        " OPTIONAL MATCH (p)-[:TREATED_WITH]->(drug:Drug)"
-        " OPTIONAL MATCH (p)-[:HAD_PROCEDURE]->(proc:Procedure)"
-        " OPTIONAL MATCH (p)-[:HAS_CLINICAL_STATE]->(c:ClinicalState)"
-        " OPTIONAL MATCH (p)-[:HAS_VIOLATION]->(v:Violation)"
-        " RETURN p, d, drug, proc, c, v"
-    )
+        pids_str = ", ".join(f"'{p}'" for p in ids)
+        highlight_query = (
+            f"MATCH (p:Patient) WHERE p.id IN [{pids_str}]"
+            " OPTIONAL MATCH (p)-[:HAS_DISEASE]->(d:Disease)"
+            " OPTIONAL MATCH (p)-[:TREATED_WITH]->(drug:Drug)"
+            " OPTIONAL MATCH (p)-[:HAD_PROCEDURE]->(proc:Procedure)"
+            " OPTIONAL MATCH (p)-[:HAS_CLINICAL_STATE]->(c:ClinicalState)"
+            " OPTIONAL MATCH (p)-[:HAS_VIOLATION]->(v:Violation)"
+            " RETURN p, d, drug, proc, c, v"
+        )
 
     return {
         "answer": answer,
@@ -1484,6 +1710,7 @@ def ask_agent_with_context(
         "highlight_query": highlight_query,
         "paths": paths,
         "selected_patients": [{"pid": s["pid"], "name": s["name"]} for s in summaries],
+        "condition_scope": focus_condition,
     }
 
 
